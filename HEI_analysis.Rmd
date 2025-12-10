@@ -1,0 +1,320 @@
+---
+title: "Analysis of non-Broomfield data - from HEI study"
+author: "Paige Varner"
+date: "2025-12-09"
+output: html_document
+---
+
+
+
+#load libraries and data
+```{r}
+library("ggplot2")
+library("tidyr")
+library("dplyr")
+library("stringr")
+
+df = read.csv("~/CO_CRA/CO_CRA_aggregate/data/HEI_VOCs.csv")
+
+```
+
+
+#re-format data for readability and in long form for graphing
+```{r}
+#metadata
+meta_cols <- c(
+  "Source",
+  "Trig_Site",
+  "Operation",
+  "distance..site..pad..ft",
+  "Start_Date_Time",
+  "Stop_Date_Time",
+  "Temperature..K."
+)
+
+#1hr calculated concentrations at sites
+measured_1hr <- df %>%
+  pivot_longer(
+    cols = matches("^X1\\.hr_"),
+    names_to = "chemical",
+    values_to = "value"
+  ) %>%
+  mutate(
+    chemical = str_remove(chemical, "^X1\\.hr_"),
+    data_type = "measured_1hr",
+    distance_ft = NA_real_,
+    unit = "ppb"
+  ) %>%
+  select(all_of(meta_cols), data_type, chemical, distance_ft, value, unit)
+
+#AERMOD (total VOC?) concentrations
+aermod_voc <- df %>%
+  pivot_longer(
+    cols = matches("^AERMOD\\.CONC\\."),
+    names_to = "name",
+    values_to = "value"
+  ) %>%
+  mutate(
+    distance_ft = str_extract(name, "(?<=CONC\\.)\\d+"),
+    distance_ft = as.numeric(distance_ft),
+    data_type = "aermod_total_voc",
+    chemical = "total_VOC",
+    unit = if_else(str_detect(name, "ppb"), "ppb", "unknown")
+  ) %>%
+  select(all_of(meta_cols), data_type, chemical, distance_ft, value, unit)
+
+#individual VOC conc by distance
+modeled_ppb <- df %>%
+  pivot_longer(
+    cols = matches("\\.\\d+ft\\.\\.ppb"),
+    names_to = "name",
+    values_to = "value"
+  ) %>%
+  mutate(
+    chemical = str_extract(name, "^[^\\.]+"),
+    distance_ft = str_extract(name, "\\d+(?=ft)"),
+    distance_ft = as.numeric(distance_ft),
+    data_type = "modeled_ppb",
+    unit = "ppb"
+  ) %>%
+  select(all_of(meta_cols), data_type, chemical, distance_ft, value, unit)
+
+#add together
+long_data <- bind_rows(
+  measured_1hr,
+  aermod_voc,
+  modeled_ppb
+)
+```
+
+
+
+#calculate mean, 50th and 95th percentile concentrations for each source and operation for each chemical (data_type = modeled_ppb)
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ─────────────────────────────────────────────
+# 1) Filter and prepare data
+# ─────────────────────────────────────────────
+
+# Filter for benzene and drilling operation
+lt_data <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "LT") %>%
+  select(distance_ft, mean_ppb, se_ppb)
+
+pdc_data <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "PDC") %>%
+  select(distance_ft, mean_ppb, se_ppb)
+
+# Create mapping based on 4000 ft separation
+# LT 0 -> PDC 4000
+# LT 500 -> PDC 3500
+# LT 1000 -> PDC 3000
+# LT 1500 -> PDC 2500
+# LT 2000 -> PDC 2000
+# LT 2500 -> PDC 1500
+# LT 3000 -> PDC 1000
+# LT 3500 -> PDC 500
+# LT 4000 -> PDC 0
+alignment <- tibble(
+  LT_distance = seq(0, 4000, by = 500),
+  PDC_distance = seq(4000, 0, by = -500)
+)
+
+# Merge data according to alignment
+plot_data <- alignment %>%
+  left_join(lt_data, by = c("LT_distance" = "distance_ft")) %>%
+  rename(LT_mean = mean_ppb, LT_se = se_ppb) %>%
+  left_join(pdc_data, by = c("PDC_distance" = "distance_ft")) %>%
+  rename(PDC_mean = mean_ppb, PDC_se = se_ppb) %>%
+  # Add combined mean and SE
+  mutate(
+    Combined_mean = LT_mean + PDC_mean,
+    Combined_se = sqrt(LT_se^2 + PDC_se^2)
+  )
+
+# ─────────────────────────────────────────────
+# 2) Convert to long format for plotting
+# ─────────────────────────────────────────────
+plot_long <- plot_data %>%
+  pivot_longer(
+    cols = c(LT_mean, PDC_mean, Combined_mean, LT_se, PDC_se, Combined_se),
+    names_to = c("Source", ".value"),
+    names_pattern = "(LT|PDC|Combined)_(.*)"
+  )
+
+# ─────────────────────────────────────────────
+# 3) Create the plot
+# ─────────────────────────────────────────────
+benzene = ggplot(plot_long, aes(x = LT_distance, y = mean, color = Source)) +
+
+  # Error bars for LT and PDC only
+  geom_errorbar(
+    data = filter(plot_long, Source %in% c("LT", "PDC")),
+    aes(ymin = mean - se, ymax = mean + se),
+    width = 100
+  ) +
+
+  # Lines (all solid)
+  geom_line(linewidth = 1.2) +
+
+  # Points for LT and PDC only
+  geom_point(data = filter(plot_long, Source %in% c("LT", "PDC")), size = 3) +
+
+  # Horizontal reference line at 9 ppb
+  geom_hline(yintercept = 9, linetype = "dotted", linewidth = 1, color = "black") +
+
+  # Colors
+  scale_color_manual(values = c("LT" = "red", "PDC" = "blue", "Combined" = "purple")) +
+
+  # Axes and labels
+  scale_x_continuous(
+    name = "Distance along transect from LT site (ft)",
+    breaks = seq(0, 4000, by = 500),
+    limits = c(0, 4000)
+  ) +
+  scale_y_continuous(name = "Mean Benzene Concentration (ppb)") +
+
+  labs(
+    title = "Aligned Modeled Benzene Concentrations",
+    subtitle = "Drilling operation — LT and PDC sites 4000 ft apart\nError bars = ±1 SE; dotted line = 9 ppb; purple = combined"
+  ) +
+
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+
+benzene
+
+ggsave(filename = "benzene_4000ft.png", device = "png", plot = benzene, path = "~/CO_CRA/CO_CRA_aggregate/output/", width = 10, height = 7, dpi = 300)
+```
+
+
+
+#graph 95th percentile for benzene
+```{r}
+# ─────────────────────────────────────────────
+# 1) Filter and prepare data
+# ─────────────────────────────────────────────
+
+# Filter for benzene and drilling operation
+lt_data <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "LT") %>%
+  select(distance_ft, p95_ppb)
+
+pdc_data <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "PDC") %>%
+  select(distance_ft, p95_ppb)
+
+# Create mapping based on 4000 ft separation
+alignment <- tibble(
+  LT_distance = seq(0, 4000, by = 500),
+  PDC_distance = seq(4000, 0, by = -500)
+)
+
+# Merge data according to alignment
+plot_data <- alignment %>%
+  left_join(lt_data, by = c("LT_distance" = "distance_ft")) %>%
+  rename(LT_p95 = p95_ppb) %>%
+  left_join(pdc_data, by = c("PDC_distance" = "distance_ft")) %>%
+  rename(PDC_p95 = p95_ppb) %>%
+  # Add combined 95th percentile (sum of LT + PDC)
+  mutate(
+    Combined_p95 = LT_p95 + PDC_p95
+  )
+
+# ─────────────────────────────────────────────
+# 2) Convert to long format for plotting
+# ─────────────────────────────────────────────
+plot_long <- plot_data %>%
+  pivot_longer(
+    cols = c(LT_p95, PDC_p95, Combined_p95),
+    names_to = "Source",
+    values_to = "p95"
+  ) %>%
+  # Rename factor levels for proper legend
+  mutate(
+    Source = recode(Source,
+                    "LT_p95" = "LT",
+                    "PDC_p95" = "PDC",
+                    "Combined_p95" = "Combined")
+  )
+
+# ─────────────────────────────────────────────
+# 3) Create the plot
+# ─────────────────────────────────────────────
+benzene_95 = ggplot(plot_long, aes(x = LT_distance, y = p95, color = Source)) +
+
+  # Lines (all solid)
+  geom_line(linewidth = 1.2) +
+
+  # Points for all three lines
+  geom_point(size = 3) +
+
+  # Horizontal reference line at 9 ppb
+  geom_hline(yintercept = 9, linetype = "dotted", linewidth = 1, color = "black") +
+
+  # Colors manually assigned
+  scale_color_manual(
+    values = c("LT" = "red", "PDC" = "blue", "Combined" = "purple"),
+    labels = c("Aggregate", "Site 1", "Site 2")
+  ) +
+
+  # Axes and labels
+  scale_x_continuous(
+    name = "Distance from Site 1 (ft)",
+    breaks = seq(0, 4000, by = 500),
+    limits = c(0, 4000)
+  ) +
+  scale_y_continuous(name = "95th Percentile Benzene Concentration (ppb)") +
+
+  labs(
+    title = "Benzene Aggregated 95th Percentile Concentrations - Drilling",
+  ) +
+  scale_x_continuous(
+  name = "Distance from Site 1 (ft)",
+  breaks = seq(0, 4000, 500),
+  limits = c(0, 4000),
+  sec.axis = sec_axis(~ 4000 - ., breaks = seq(0, 4000, 500), name = "Distance from Site 2 (ft)")
+) +
+ 
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+
+benzene_95
+
+ggsave(filename = "benzene_4000ft_95.png", device = "png", plot = benzene_95, path = "~/CO_CRA/CO_CRA_aggregate/output/", width = 7, height = 5, dpi = 300)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
