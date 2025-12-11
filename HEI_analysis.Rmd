@@ -91,13 +91,25 @@ long_data <- bind_rows(
 
 #calculate mean, 50th and 95th percentile concentrations for each source and operation for each chemical (data_type = modeled_ppb)
 ```{r}
-library(dplyr)
-library(tidyr)
-library(ggplot2)
 
 # ─────────────────────────────────────────────
 # 1) Filter and prepare data
 # ─────────────────────────────────────────────
+
+#calculate summary info
+modeled_summary_dist <- long_data %>%
+  filter(data_type == "modeled_ppb") %>%
+  group_by(Source, Operation, chemical, distance_ft) %>%
+  summarise(
+    n = sum(!is.na(value)),
+    mean_ppb = mean(value, na.rm = TRUE),
+    p50_ppb = median(value, na.rm = TRUE),      # 50th percentile
+    p95_ppb = quantile(value, 0.95, na.rm = TRUE),
+    sd_ppb = sd(value, na.rm = TRUE),
+    se_ppb = sd_ppb / sqrt(n),
+    .groups = "drop"
+  )
+
 
 # Filter for benzene and drilling operation
 lt_data <- modeled_summary_dist %>%
@@ -194,106 +206,209 @@ ggsave(filename = "benzene_4000ft.png", device = "png", plot = benzene, path = "
 
 
 
-#graph 95th percentile for benzene
+#graph 95th percentile for benzene - LT first
 ```{r}
-# ─────────────────────────────────────────────
-# 1) Filter and prepare data
-# ─────────────────────────────────────────────
-
-# Filter for benzene and drilling operation
-lt_data <- modeled_summary_dist %>%
-  filter(chemical == "benzene", Operation == "Drilling", Source == "LT") %>%
-  select(distance_ft, p95_ppb)
-
-pdc_data <- modeled_summary_dist %>%
-  filter(chemical == "benzene", Operation == "Drilling", Source == "PDC") %>%
-  select(distance_ft, p95_ppb)
-
-# Create mapping based on 4000 ft separation
-alignment <- tibble(
-  LT_distance = seq(0, 4000, by = 500),
-  PDC_distance = seq(4000, 0, by = -500)
-)
-
-# Merge data according to alignment
-plot_data <- alignment %>%
-  left_join(lt_data, by = c("LT_distance" = "distance_ft")) %>%
-  rename(LT_p95 = p95_ppb) %>%
-  left_join(pdc_data, by = c("PDC_distance" = "distance_ft")) %>%
-  rename(PDC_p95 = p95_ppb) %>%
-  # Add combined 95th percentile (sum of LT + PDC)
-  mutate(
-    Combined_p95 = LT_p95 + PDC_p95
+# 1) compute summaries
+modeled_summary_dist <- long_data %>%
+  filter(data_type == "modeled_ppb") %>%
+  group_by(Source, Operation, chemical, distance_ft) %>%
+  summarise(
+    n = sum(!is.na(value)),
+    mean_ppb = mean(value, na.rm = TRUE),
+    p50_ppb = median(value, na.rm = TRUE),
+    p95_ppb = quantile(value, 0.95, na.rm = TRUE),
+    sd_ppb = sd(value, na.rm = TRUE),
+    se_ppb = sd_ppb / sqrt(n),
+    .groups = "drop"
   )
 
-# ─────────────────────────────────────────────
-# 2) Convert to long format for plotting
-# ─────────────────────────────────────────────
+# 2) get p95 lookups for LT and PDC (drilling, benzene)
+lt_lookup <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "LT") %>%
+  select(distance_ft, LT_p95 = p95_ppb)
+
+pdc_lookup <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "PDC") %>%
+  select(distance_ft, PDC_p95 = p95_ppb)
+
+# 3) define LT plotting distances (0 -> 4000 by 500); we will compute aggregate at each LT distance d
+LT_distance_vals <- seq(0, 4000, by = 500)
+alignment <- tibble(LT_distance = LT_distance_vals)
+
+# 4) join LT p95 and the corresponding PDC p95 at (d - 1000)
+plot_data <- alignment %>%
+  left_join(lt_lookup, by = c("LT_distance" = "distance_ft")) %>%
+  mutate(PDC_needed = LT_distance - 1000) %>%
+  left_join(pdc_lookup, by = c("PDC_needed" = "distance_ft")) %>%
+  # DO NOT replace missing values — keep NA so ggplot does not connect or plot them
+  mutate(
+    # Aggregate only when both exist
+    Aggregate_p95 = ifelse(!is.na(LT_p95) & !is.na(PDC_p95),
+                           LT_p95 + PDC_p95,
+                           NA_real_)
+  )
+
+# 5) build long dataframe for plotting
 plot_long <- plot_data %>%
+  select(LT_distance, LT_p95, PDC_p95, Aggregate_p95) %>%
+  rename(Site1 = LT_p95,
+         Site2 = PDC_p95,
+         Aggregate = Aggregate_p95) %>%
   pivot_longer(
-    cols = c(LT_p95, PDC_p95, Combined_p95),
+    cols = c(Site1, Site2, Aggregate),
     names_to = "Source",
     values_to = "p95"
-  ) %>%
-  # Rename factor levels for proper legend
-  mutate(
-    Source = recode(Source,
-                    "LT_p95" = "LT",
-                    "PDC_p95" = "PDC",
-                    "Combined_p95" = "Combined")
   )
 
-# ─────────────────────────────────────────────
-# 3) Create the plot
-# ─────────────────────────────────────────────
-benzene_95 = ggplot(plot_long, aes(x = LT_distance, y = p95, color = Source)) +
+plot_long <- plot_long %>%
+  mutate(
+    Source = factor(Source,
+                    levels = c("Site1", "Site2", "Aggregate"),
+                    labels = c("Site 1", "Site 2", "Aggregate"))
+  )
 
-  # Lines (all solid)
+# 6) Plot: LT = red, PDC = blue, Aggregate = purple; points on all 3; 9 ppb horizontal line; sec axis = distance from Site 2
+# Secondary axis transformation: distance_from_site2 = distance_from_site1 - 1000
+site2_transform <- function(x) x - 1000
+
+benzene_95 <- ggplot(plot_long, aes(x = LT_distance, y = p95, color = Source)) +
   geom_line(linewidth = 1.2) +
-
-  # Points for all three lines
   geom_point(size = 3) +
-
-  # Horizontal reference line at 9 ppb
   geom_hline(yintercept = 9, linetype = "dotted", linewidth = 1, color = "black") +
-
-  # Colors manually assigned
   scale_color_manual(
-    values = c("LT" = "red", "PDC" = "blue", "Combined" = "purple"),
-    labels = c("Aggregate", "Site 1", "Site 2")
-  ) +
-
-  # Axes and labels
+  values = c("Site 1" = "red",
+             "Site 2" = "blue",
+             "Aggregate" = "purple")
+) +
   scale_x_continuous(
     name = "Distance from Site 1 (ft)",
     breaks = seq(0, 4000, by = 500),
-    limits = c(0, 4000)
+    limits = c(0, 4000),
+    sec.axis = sec_axis(
+      trans = site2_transform,
+      breaks = seq(0, 4000, by = 500),
+      name = "Distance from Site 2 (ft)"
+    )
   ) +
   scale_y_continuous(name = "95th Percentile Benzene Concentration (ppb)") +
-
   labs(
-    title = "Benzene Aggregated 95th Percentile Concentrations - Drilling",
+    title = "Benzene Aggregated 95th Percentile Concentrations - Drilling"
   ) +
-  scale_x_continuous(
-  name = "Distance from Site 1 (ft)",
-  breaks = seq(0, 4000, 500),
-  limits = c(0, 4000),
-  sec.axis = sec_axis(~ 4000 - ., breaks = seq(0, 4000, 500), name = "Distance from Site 2 (ft)")
-) +
- 
   theme_bw() +
-  theme(
-    plot.title = element_text(face = "bold")
-  )
+  theme(plot.title = element_text(face = "bold"))
 
 benzene_95
 
-ggsave(filename = "benzene_4000ft_95.png", device = "png", plot = benzene_95, path = "~/CO_CRA/CO_CRA_aggregate/output/", width = 7, height = 5, dpi = 300)
+ggsave(filename = "benzene_1000ft_offset_95.png",
+       device = "png",
+       plot = benzene_95,
+       path = "~/CO_CRA/CO_CRA_aggregate/output/",
+       width = 7, height = 5, dpi = 300)
+
 ```
 
 
 
+#graph 95th percentile for benzene - PDC first
+```{r}
+# 1) compute summaries
+modeled_summary_dist <- long_data %>%
+  filter(data_type == "modeled_ppb") %>%
+  group_by(Source, Operation, chemical, distance_ft) %>%
+  summarise(
+    n = sum(!is.na(value)),
+    mean_ppb = mean(value, na.rm = TRUE),
+    p50_ppb = median(value, na.rm = TRUE),
+    p95_ppb = quantile(value, 0.95, na.rm = TRUE),
+    sd_ppb = sd(value, na.rm = TRUE),
+    se_ppb = sd_ppb / sqrt(n),
+    .groups = "drop"
+  )
 
+# 2) get p95 lookups for LT and PDC (drilling, benzene)
+lt_lookup <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "LT") %>%
+  select(distance_ft, LT_p95 = p95_ppb)
+
+pdc_lookup <- modeled_summary_dist %>%
+  filter(chemical == "benzene", Operation == "Drilling", Source == "PDC") %>%
+  select(distance_ft, PDC_p95 = p95_ppb)
+
+# 3) define PDC plotting distances (0 -> 4000 by 500); we will compute aggregate at each PDC distance d
+PDC_distance_vals <- seq(0, 4000, by = 500)
+alignment <- tibble(PDC_distance = PDC_distance_vals)
+
+# 4) join PDC p95 and the corresponding LT p95 at (d - 1000)
+plot_data <- alignment %>%
+  left_join(pdc_lookup, by = c("PDC_distance" = "distance_ft")) %>%
+  mutate(LT_needed = PDC_distance - 1000) %>%
+  left_join(lt_lookup, by = c("LT_needed" = "distance_ft")) %>%
+  # DO NOT replace missing values — keep NA so ggplot does not connect or plot them
+  mutate(
+    # Aggregate only when both exist
+    Aggregate_p95 = ifelse(!is.na(PDC_p95) & !is.na(LT_p95),
+                           PDC_p95 + LT_p95,
+                           NA_real_)
+  )
+
+# 5) build long dataframe for plotting
+plot_long <- plot_data %>%
+  select(PDC_distance, PDC_p95, LT_p95, Aggregate_p95) %>%
+  rename(Site1 = PDC_p95,
+         Site2 = LT_p95,
+         Aggregate = Aggregate_p95) %>%
+  pivot_longer(
+    cols = c(Site1, Site2, Aggregate),
+    names_to = "Source",
+    values_to = "p95"
+  )
+
+plot_long <- plot_long %>%
+  mutate(
+    Source = factor(Source,
+                    levels = c("Site1", "Site2", "Aggregate"),
+                    labels = c("Site 1", "Site 2", "Aggregate"))
+  )
+
+# 6) Plot: PDC = red, LT = blue, Aggregate = purple; points on all 3; 9 ppb horizontal line; sec axis = distance from Site 2
+# Secondary axis transformation: distance_from_site2 = distance_from_site1 - 1000
+site2_transform <- function(x) x - 1000
+
+benzene_95 <- ggplot(plot_long, aes(x = PDC_distance, y = p95, color = Source)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 9, linetype = "dotted", linewidth = 1, color = "black") +
+  scale_color_manual(
+  values = c("Site 1" = "red",
+             "Site 2" = "blue",
+             "Aggregate" = "purple")
+) +
+  scale_x_continuous(
+    name = "Distance from Site 1 (ft)",
+    breaks = seq(0, 4000, by = 500),
+    limits = c(0, 4000),
+    sec.axis = sec_axis(
+      trans = site2_transform,
+      breaks = seq(0, 4000, by = 500),
+      name = "Distance from Site 2 (ft)"
+    )
+  ) +
+  scale_y_continuous(name = "95th Percentile Benzene Concentration (ppb)") +
+  labs(
+    title = "Benzene Aggregated 95th Percentile Concentrations - Drilling"
+  ) +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold"))
+
+benzene_95
+
+ggsave(filename = "benzene_1000ft_offset_95.png",
+       device = "png",
+       plot = benzene_95,
+       path = "~/CO_CRA/CO_CRA_aggregate/output/",
+       width = 7, height = 5, dpi = 300)
+
+```
 
 
 
