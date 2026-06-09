@@ -1,0 +1,1071 @@
+---
+title: "chronic aggregate analysis with background"
+output: html_document
+date: "2026-04-01"
+---
+
+
+#load libraries
+```{r}
+library("dplyr")
+library("tidyr")
+library("Rmisc")
+library("terra")
+library("readxl")
+library("tidyverse")
+library("lubridate")
+library("viridis")
+detach(package:Rmisc)
+detach(package:plyr)
+```
+
+
+#load data
+```{r}
+rfcs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/RfCs_5-2026.csv")
+iurs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/IURs.csv")
+dist_source = read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/distance_to_nearest_source.csv")
+
+#ozone
+ozone = read.csv("~/CO_CRA/CO_CRA_aggregate/data/Ozone8hour2018to2023.csv")
+
+#load coordinates
+x <- as.matrix(read.csv("~/CO_CRA/CO_CRA_aggregate/data//broomfield/XX_coordinates.csv", header = FALSE))
+y <- as.matrix(read.csv("~/CO_CRA/CO_CRA_aggregate/data//broomfield/YY_coordinates.csv", header = FALSE))
+```
+
+
+
+#load montly concentration data
+```{r}
+data_dir <- "~/CO_CRA/CO_CRA_aggregate/data/broomfield/monthly/gapfilled_wbkg"
+
+files <- list.files(data_dir, pattern = "\\.xlsx$", full.names = TRUE)
+
+# Extract YYYYMM from filename and sort
+file_dates <- stringr::str_extract(files, "\\d{6}")
+files <- files[order(file_dates)]
+
+basename(files)
+
+#load all files and sheets
+data_list <- list()
+
+for (f in files) {
+
+  sheet_names <- excel_sheets(f)
+
+  chem_list <- list()
+
+  for (s in sheet_names) {
+    chem_list[[s]] <- as.matrix(read_excel(f, sheet = s, col_names = FALSE))
+  }
+
+  data_list[[basename(f)]] <- chem_list
+}
+
+names(data_list) <- file_dates
+
+#checks
+
+# Number of months
+length(data_list)
+
+# Chemical names
+names(data_list[[1]])
+chemicals <- names(data_list[[1]])
+
+# Grid size
+dim(data_list[[1]][[1]])
+
+# Check all months have same chemicals
+all(sapply(data_list, names) == names(data_list[[1]]))
+```
+
+
+#load annual production concentration data
+```{r}
+annual_dir <- "~/CO_CRA/CO_CRA_aggregate/data/broomfield"
+
+annual_files <- list.files(
+  annual_dir,
+  pattern = "annual_gapfilled_with_bkg_\\d{8}\\.xlsx$",
+  full.names = TRUE
+)
+
+# extract YYYYMM and sort 
+annual_dates <- stringr::str_extract(annual_files, "\\d{6}")
+annual_files <- annual_files[order(annual_dates)]
+
+# load all annual files
+annual_data_list <- list()
+
+for (f in annual_files) {
+
+  sheet_names <- excel_sheets(f)
+
+  chem_list <- list()
+
+  for (s in sheet_names) {
+    chem_list[[s]] <- as.matrix(read_excel(f, sheet = s, col_names = FALSE))
+  }
+
+  annual_data_list[[basename(f)]] <- chem_list
+}
+
+names(annual_data_list) <- annual_dates
+
+#checks
+# number of annual files
+length(annual_data_list)
+
+# chemical names match?
+all(sapply(annual_data_list, names) == chemicals)
+
+# grid sizes match?
+all(sapply(annual_data_list[[1]], dim) == dim(data_list[[1]][[1]]))
+```
+
+
+#average across 4 annual production files for use in TWA
+```{r}
+# get chemical names
+chemicals <- names(data_list[[1]])
+
+# initialize averaged annual list
+annual_avg_list <- list()
+
+for (chem in chemicals) {
+
+  # start with zero matrix
+  sum_mat <- 0
+
+  for (j in seq_along(annual_data_list)) {
+    sum_mat <- sum_mat + annual_data_list[[j]][[chem]]
+  }
+
+  # average across years
+  annual_avg_list[[chem]] <- sum_mat / length(annual_data_list)
+}
+
+#checks
+# same dimensions?
+all(sapply(annual_avg_list, dim) == dim(data_list[[1]][[1]]))
+
+# check values
+summary(as.vector(annual_avg_list[[1]]))
+```
+
+
+
+#calculate monthly and 30 year ozone - TWA 
+```{r}
+#format dates
+dates <- as.Date(paste0(names(data_list), "01"), format = "%Y%m%d")
+
+days_in_month_vec <- as.numeric(format(
+  as.Date(format(dates + 32, "%Y-%m-01")) - 1,
+  "%d"
+))
+
+#filter
+ozone_clean <- ozone %>%
+  mutate(
+    Date.Local = as.Date(Date.Local),
+    year_month = format(Date.Local, "%Y%m"),
+    Arithmetic.Mean = Arithmetic.Mean * 1000  # convert ppm → ppb
+  )
+
+# keep months that match broomfield data
+months_needed <- names(data_list)
+
+ozone_filtered <- ozone_clean %>%
+  filter(year_month %in% months_needed)
+
+# monthly median ozone for each month
+ozone_monthly <- ozone_filtered %>%
+  group_by(year_month) %>%
+  summarise(
+    monthly_median = median(Arithmetic.Mean, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(year_month)
+
+# check
+all(ozone_monthly$year_month == months_needed)
+
+# days per month
+ozone_monthly$days <- days_in_month_vec
+
+# monthly contribution 
+monthly_num <- sum(ozone_monthly$monthly_median * ozone_monthly$days)
+monthly_den <- sum(ozone_monthly$days)
+
+# 30-year contribution 
+ozone_longterm_median <- median(ozone_filtered$Arithmetic.Mean, na.rm = TRUE)
+
+annual_days <- 30 * 365
+
+longterm_num <- ozone_longterm_median * annual_days
+
+# ozone TWA (median-based)
+ozone_TWA <- (monthly_num + longterm_num) / (monthly_den + annual_days)
+
+# checks
+summary(ozone_filtered$Arithmetic.Mean)
+
+ozone_monthly[1:5, ]
+
+ozone_TWA
+```
+
+
+
+
+#calculate TWAs for each chemical and grid cell
+```{r}
+#annual days for production calculation
+annual_days <- 30 * 365
+
+#get number of days per month
+dates <- as.Date(paste0(names(data_list), "01"), format = "%Y%m%d")
+
+days_in_month <- as.numeric(format(
+  as.Date(format(dates + 32, "%Y-%m-01")) - 1,
+  "%d"
+))
+
+#check
+data.frame(
+  month = names(data_list)[1:6],
+  days = days_in_month[1:6]
+)
+
+length(days_in_month) == length(data_list)
+
+#get chemical names
+chemicals <- names(data_list[[1]])
+
+## calculate TWA for all chemicals ##
+TWA_list <- list()
+
+for (chem in chemicals) {
+
+  # monthly contribution
+  num <- 0
+
+  for (i in seq_along(data_list)) {
+    num <- num + data_list[[i]][[chem]] * days_in_month[i]
+  }
+
+  # add 30-year averaged annual contribution
+  num <- num + annual_avg_list[[chem]] * annual_days
+
+  # denominator
+  den <- sum(days_in_month) + annual_days
+
+  TWA_list[[chem]] <- num / den
+}
+
+#checks
+# number of chemicals
+length(TWA_list)
+
+# check one
+dim(TWA_list[[1]])
+
+# compare to original
+dim(data_list[[1]][[1]])
+```
+
+
+
+#fix chemical names between rfcs and data
+```{r}
+rfcs_chronic <- rfcs %>%
+  dplyr::filter(Exposure == "chronic")
+
+# from TWA data
+twa_chems <- names(TWA_list)
+
+# from RfC table
+rfc_chems <- unique(rfcs_chronic$Chemical)
+
+twa_chems
+rfc_chems
+
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Benzene"] <- "benzene"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Toluene"] <- "toluene"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Ethylbenzene"] <- "ethylbenzene"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Xylenes"] <- "xylenes"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "n-nonane"] <- "nonane"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "n-decane"] <- "decane"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Aliphatic low"] <- "aliphatic low"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Aromatic medium"] <- "aromatic medium"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Styrene"] <- "styrene"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Trichloroethylene (TCE)"] <- "c2hcl3"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Tetrachloroethylene (PCE)"] <- "c2cl4"
+rfcs_chronic$Chemical[rfcs_chronic$Chemical == "Propene"] <- "propene"
+
+#check
+setdiff(names(TWA_list), rfcs_chronic$Chemical)
+setdiff(rfcs_chronic$Chemical, names(TWA_list))
+```
+
+
+
+#calculate spatial chronic HQs for each chemical/endpoint combo in broomfield data
+```{r}
+endpoints <- unique(rfcs_chronic$Endpoint)
+HQ_list <- list()
+
+#loop through and calculate HQ for endpoints and chemicals
+for (ep in endpoints) {
+
+  HQ_list[[ep]] <- list()
+
+  for (chem in chemicals) {
+
+    # get RfC for this chemical + endpoint
+    rfc_val <- rfcs_chronic %>%
+      dplyr::filter(Chemical == chem, Endpoint == ep) %>%
+      dplyr::pull(RfC)
+
+    # skip if no RfC exists
+    if (length(rfc_val) == 0) next
+
+    # if multiple values exist, take first (or flag later)
+    rfc_val <- rfc_val[1]
+
+    # calculate HQ
+    HQ_list[[ep]][[chem]] <- TWA_list[[chem]] / rfc_val
+  }
+}
+
+#checks
+HQ_list[["respiratory"]][["benzene"]]
+
+# number of endpoints
+length(HQ_list)
+
+# chemicals within an endpoint
+names(HQ_list[[1]])
+
+# dimensions match original grid
+dim(HQ_list[[1]][[1]])
+dim(TWA_list[[1]])
+
+# check values
+summary(as.vector(HQ_list[[1]][[1]]))
+
+#missing chemical/rfcs
+missing_chems <- setdiff(chemicals, rfcs_chronic$Chemical)
+missing_chems
+
+```
+
+
+#calculate chronic HQs for ozone (not spatial - consistent across area)
+```{r}
+#create ozone matrix
+template_mat <- TWA_list[[1]]
+
+ozone_mat <- matrix(
+  ozone_TWA,
+  nrow = nrow(template_mat),
+  ncol = ncol(template_mat)
+)
+
+#calculate ozone HQs and add to HQ_list
+for (ep in endpoints) {
+
+  # get ozone RfC for this endpoint
+  rfc_val <- rfcs_chronic %>%
+    dplyr::filter(Chemical == "Ozone", Endpoint == ep) %>%
+    dplyr::pull(RfC)
+
+  # skip if no RfC exists
+  if (length(rfc_val) == 0) next
+
+  rfc_val <- rfc_val[1]
+
+  # calculate HQ for ozone
+  HQ_ozone <- ozone_mat / rfc_val
+
+  # add to HQ_list
+  HQ_list[[ep]][["ozone"]] <- HQ_ozone
+}
+
+#check
+ep_with_ozone <- names(HQ_list)[
+  sapply(HQ_list, function(x) "ozone" %in% names(x))
+][1]
+
+HQ_ozone_test <- HQ_list[[ep_with_ozone]][["ozone"]]
+
+#dimensions
+dim(HQ_ozone_test)
+dim(TWA_list[[1]])
+```
+
+
+
+#calculate spatial chronic HIs for each endpoint
+```{r}
+# initialize HI list
+HI_list <- list()
+
+for (ep in names(HQ_list)) {
+
+  # get all HQ matrices for this endpoint
+  chem_HQs <- HQ_list[[ep]]
+
+  # skip if no chemicals (safety check)
+  if (length(chem_HQs) == 0) next
+
+  # sum matrices cell by cell (includes ozone automatically if present)
+  HI_list[[ep]] <- Reduce(`+`, chem_HQs)
+}
+
+#checks
+# number of endpoints
+length(HI_list)
+
+# dimensions match original grid
+dim(HI_list[[1]])
+dim(TWA_list[[1]])
+
+# check values
+summary(as.vector(HI_list[[1]]))
+
+#inspection per endpoint
+for (ep in names(HI_list)) {
+  cat("Endpoint:", ep, "\n")
+  print(summary(as.vector(HI_list[[ep]])))
+  cat("\n")
+}
+```
+
+
+#remove any grids within 25 m or less than the sampling source
+```{r}
+# convert distance dataframe to matrix
+dist_mat <- as.matrix(dist_source)
+
+mask <- dist_mat >= 25   # TRUE = keep, FALSE = remove
+
+#apply mask to HI results
+HI_list_masked <- list()
+
+for (ep in names(HI_list)) {
+  HI_list[[ep]] <- HI_list[[ep]]
+  HI_list[[ep]][!mask] <- NA
+}
+
+#checks
+# how many cells removed?
+sum(!mask)
+
+# visualize mask
+image(mask)
+```
+
+
+#summary stats for chronic HIs
+```{r}
+# function to calculate summary stats
+calc_summary <- function(mat) {
+
+  vals <- as.vector(mat)
+
+  vals <- vals[!is.na(vals)]
+
+  data.frame(
+    min = min(vals),
+    mean = mean(vals),
+    median = median(vals),
+    max = max(vals),
+    sd = sd(vals),
+    se = sd(vals) / sqrt(length(vals))
+  )
+}
+
+# apply to all endpoints
+HI_summary <- do.call(
+  rbind,
+  lapply(names(HI_list), function(ep) {
+    cbind(
+      endpoint = ep,
+      calc_summary(HI_list[[ep]])
+    )
+  })
+)
+
+# clean row names
+rownames(HI_summary) <- NULL
+
+HI_summary
+
+write.csv(HI_summary, file = "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_wbkg.csv")
+```
+
+
+#spatial plots of HI per endpoint
+```{r}
+# function to convert matrix + coords to df
+make_df <- function(mat, x, y) {
+
+  data.frame(
+    x = as.vector(x),
+    y = as.vector(y),
+    HI = as.vector(mat)
+  )
+}
+
+#define bounds
+x_min <- 496000
+x_max <- 501000
+
+y_min <- 4425000
+y_max <- 4426500
+
+# read well pad coordinates
+wellpad_cords <- read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv")
+
+# create 610 m radius circles around each well pad
+radius <- 610
+
+circle_df <- do.call(
+  rbind,
+  lapply(seq_len(nrow(wellpad_cords)), function(i) {
+
+    theta <- seq(0, 2 * pi, length.out = 200)
+
+    data.frame(
+      id = i,
+      x = wellpad_cords$X[i] + radius * cos(theta),
+      y = wellpad_cords$Y[i] + radius * sin(theta)
+    )
+  })
+)
+
+#define legend
+hi_min <- 0
+hi_max <- 0.71
+
+hi_breaks <- seq(hi_min, hi_max, by = 0.1)
+
+# plot all endpoints
+plots <- lapply(names(HI_list), function(ep) {
+
+  df <- make_df(HI_list[[ep]], x, y)
+
+  ggplot(df, aes(x = x, y = y, fill = HI)) +
+
+    geom_raster() +
+
+    # 610 m setback circles
+    geom_path(
+      data = circle_df,
+      aes(x = x, y = y, group = id),
+      color = "black",
+      linewidth = 0.8,
+      inherit.aes = FALSE
+    ) +
+
+    scale_fill_viridis_c(
+      name = "HI",
+      limits = c(hi_min, hi_max),
+      breaks = hi_breaks,
+      oob = scales::squish
+    ) +
+
+    coord_cartesian(
+      xlim = c(x_min, x_max),
+      ylim = c(y_min, y_max)
+    ) +
+
+    labs(
+      title = paste("Hazard Index -", ep),
+      x = "X (m)",
+      y = "Y (m)"
+    ) +
+
+    theme_minimal()
+
+})
+
+# view plots
+plots[[1]]
+plots[[2]]
+plots[[3]]
+plots[[4]]
+plots[[5]]
+plots[[6]]
+plots[[7]]
+plots[[8]]
+plots[[9]]
+plots[[10]]
+plots[[11]]
+
+# save plots
+for (i in seq_along(plots)) {
+
+  ggsave(
+    filename = file.path(
+      "~/CO_CRA/CO_CRA_aggregate/output/chronic",
+      paste0("HI_wbkg_", names(HI_list)[i], ".png")
+    ),
+    plot = plots[[i]],
+    width = 6,
+    height = 5,
+    dpi = 300
+  )
+}
+```
+
+
+
+
+
+### cancer analysis ###
+
+
+
+
+#fix chemical names between iurs and data
+```{r}
+# check chemical names
+unique(iurs$Chemical)
+names(TWA_list)
+
+# fix mismatches 
+iurs$Chemical[iurs$Chemical == "Benzene"] <- "benzene"
+iurs$Chemical[iurs$Chemical == "Ethylbenzene"] <- "ethylbenzene"
+iurs$Chemical[iurs$Chemical == "C2HCl3"] <- "c2hcl3"
+iurs$Chemical[iurs$Chemical == "C2Cl4"] <- "c2cl4"
+```
+
+
+#calculate excess cancer risk, assuming 33 years of exposure (3 years of data in pre-production and 30 in production)
+```{r}
+CancerRisk_list <- list()
+
+# exposure duration adjustment
+ED_adjust <- 33 / 78
+
+#formula
+for (chem in names(TWA_list)) {
+  
+  # get IUR for this chemical
+  iur_val <- iurs %>%
+    dplyr::filter(Chemical == chem) %>%
+    dplyr::pull(IUR..ppb.)
+  
+  # skip if no IUR
+  if (length(iur_val) == 0) next
+  
+  iur_val <- iur_val[1]
+  
+  # calculate risk with exposure duration adjustment
+  CancerRisk_list[[chem]] <- TWA_list[[chem]] * iur_val * ED_adjust
+}
+
+#sum cancer risk across chemicals
+CancerRisk_total <- Reduce(`+`, CancerRisk_list)
+
+#apply the <25 m mask
+CancerRisk_total[!mask] <- NA
+
+#checks
+# dimensions
+dim(CancerRisk_total)
+dim(TWA_list[[1]])
+
+# summary
+summary(as.vector(CancerRisk_total))
+
+# inspect one chemical contribution
+summary(as.vector(CancerRisk_list[[1]]))
+```
+
+
+#summary stats
+```{r}
+#total cancer risk
+cancer_summary_tot <- calc_summary(CancerRisk_total)
+
+cancer_summary_tot
+
+write.csv(
+  cancer_summary_tot,
+  file = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_tot.csv",
+  row.names = FALSE
+)
+
+#summary per chemical
+cancer_summary_ind <- do.call(
+  rbind,
+  lapply(names(CancerRisk_list), function(chem) {
+    cbind(
+      chemical = chem,
+      calc_summary(CancerRisk_list[[chem]])
+    )
+  })
+)
+
+# clean row names
+rownames(cancer_summary_ind) <- NULL
+
+cancer_summary_ind
+
+write.csv(
+  cancer_summary_ind,
+  file = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_ind_wbkg.csv",
+  row.names = FALSE
+)
+```
+
+
+#map cancer risks
+```{r}
+make_df <- function(mat, x, y) {
+  data.frame(
+    x = as.vector(x),
+    y = as.vector(y),
+    Risk = as.vector(mat)
+  )
+}
+
+# read well pad coordinates
+wellpad_cords <- read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv")
+
+# create 610 m radius circles around each well pad
+radius <- 610
+
+circle_df <- do.call(
+  rbind,
+  lapply(seq_len(nrow(wellpad_cords)), function(i) {
+
+    theta <- seq(0, 2 * pi, length.out = 200)
+
+    data.frame(
+      id = i,
+      x = wellpad_cords$X[i] + radius * cos(theta),
+      y = wellpad_cords$Y[i] + radius * sin(theta)
+    )
+  })
+)
+
+# fixed/define legend
+risk_min <- 8.5e-8
+risk_max <- 5.2e-4
+
+# log-spaced breaks for clean legend readability
+risk_breaks <- c(1e-7, 1e-6, 1e-5, 1e-4, 5e-4)
+
+# regulatory contour limits
+contour_levels <- c(1e-6, 1e-4)
+
+# make data
+df <- make_df(CancerRisk_total, x, y)
+
+# plot
+plot_cancer_tot <- ggplot(df, aes(x = x, y = y, fill = Risk)) +
+
+  geom_raster() +
+
+  # 610 m setback circles
+  geom_path(
+    data = circle_df,
+    aes(x = x, y = y, group = id),
+    color = "black",
+    linewidth = 0.8,
+    inherit.aes = FALSE
+  ) +
+
+  scale_fill_viridis_c(
+    name = "Cancer Risk",
+    trans = "log10",
+    limits = c(risk_min, risk_max),
+    breaks = risk_breaks,
+    oob = scales::squish
+  ) +
+
+  coord_cartesian(
+    xlim = c(x_min, x_max),
+    ylim = c(y_min, y_max)
+  ) +
+
+  geom_contour(
+    aes(z = Risk),
+    breaks = contour_levels,
+    color = "red",
+    linewidth = 0.7
+  ) +
+
+  labs(
+    title = "Total Excess Cancer Risk",
+    x = "X (m)",
+    y = "Y (m)"
+  ) +
+
+  theme_minimal()
+
+# view plot
+plot_cancer_tot
+
+# save
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_tot_wbkg.png",
+  plot = plot_cancer_tot,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+
+#map of just benzene to compare (NOT USING THIS ANYMORE - NOT UPDATING LEGEND)
+```{r}
+# regulatory limits
+contour_levels <- c(1e-6, 1e-5, 1e-4)
+
+# --- select benzene ---
+benzene_mat <- CancerRisk_list[["benzene"]]
+
+# create dataframe
+df <- make_df(benzene_mat, x, y)
+
+plot_cancer_benzene <- ggplot(df, aes(x = x, y = y, fill = Risk)) +
+  geom_raster() +
+  scale_fill_viridis_c(
+    name = "Cancer Risk",
+    trans = "log10"
+  ) +
+  coord_cartesian(
+    xlim = c(x_min, x_max),
+    ylim = c(y_min, y_max)
+  ) +
+  geom_contour(
+    aes(z = Risk),
+    breaks = contour_levels,
+    color = "red",
+    linewidth = 0.7
+  ) +
+  labs(
+    title = "Excess Cancer Risk - Benzene",
+    x = "X (m)",
+    y = "Y (m)"
+  ) +
+  theme_minimal()
+
+plot_cancer_benzene
+
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_benzene_wbkg.png",
+  plot = plot_cancer_benzene,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+
+
+
+
+## map of just background cancer risk ## (LEFT OFF HERE, THEN NEED TO ADD SETBACK DISTANCE TO CANCER MAPS)
+
+
+
+
+
+#load cancer risks that were calculated without background
+```{r}
+CancerRisk_total_nobkg <- readRDS(
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/CancerRisk_total_nobkg.rds"
+)
+
+CancerRisk_list_nobkg <- readRDS(
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/CancerRisk_list_nobkg.rds"
+)
+
+#check dimensions
+dim(CancerRisk_total)
+dim(CancerRisk_total_nobkg)
+
+all(dim(CancerRisk_total) == dim(CancerRisk_total_nobkg))
+```
+
+
+#calculate background-only cancer risks (cancer risks wbkg - cancer risks w/o bkg)
+```{r}
+#total
+CancerRisk_background <-
+  CancerRisk_total -
+  CancerRisk_total_nobkg
+
+CancerRisk_background[!mask] <- NA
+
+#by chemical
+CancerRisk_background_list <- list()
+
+common_chems <- intersect(
+  names(CancerRisk_list),
+  names(CancerRisk_list_nobkg)
+)
+
+for (chem in common_chems) {
+
+  CancerRisk_background_list[[chem]] <-
+    CancerRisk_list[[chem]] -
+    CancerRisk_list_nobkg[[chem]]
+}
+
+#quick check
+summary(as.vector(CancerRisk_background))
+
+lapply(
+  CancerRisk_background_list,
+  function(x) summary(as.vector(x))
+)
+```
+
+
+#summary of background cancer risks
+```{r}
+# total background cancer risk
+cancer_summary_background_tot <- calc_summary(CancerRisk_background)
+
+cancer_summary_background_tot
+
+write.csv(
+  cancer_summary_background_tot,
+  file = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_background_tot.csv",
+  row.names = FALSE
+)
+
+# summary per chemical
+cancer_summary_background_ind <- do.call(
+  rbind,
+  lapply(names(CancerRisk_background_list), function(chem) {
+
+    cbind(
+      chemical = chem,
+      calc_summary(CancerRisk_background_list[[chem]])
+    )
+
+  })
+)
+
+# clean row names
+rownames(cancer_summary_background_ind) <- NULL
+
+cancer_summary_background_ind
+
+write.csv(
+  cancer_summary_background_ind,
+  file = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_background_ind.csv",
+  row.names = FALSE
+)
+```
+
+
+#map background cancer risks
+```{r}
+make_df <- function(mat, x, y) {
+  data.frame(
+    x = as.vector(x),
+    y = as.vector(y),
+    Risk = as.vector(mat)
+  )
+}
+
+# fixed legend (keep same as wbkg map for direct comparison)
+
+risk_min <- 8.5e-8
+risk_max <- 5.2e-4
+
+risk_breaks <- c(
+  1e-7,
+  1e-6,
+  1e-5,
+  1e-4,
+  5e-4
+)
+
+# regulatory contour limits
+contour_levels <- c(1e-6, 1e-4)
+
+# create dataframe from BACKGROUND risk
+df <- make_df(CancerRisk_background, x, y)
+
+# plot
+plot_cancer_background <- ggplot(
+  df,
+  aes(x = x, y = y, fill = Risk)
+) +
+  geom_raster() +
+
+  scale_fill_viridis_c(
+    name = "Cancer Risk",
+    trans = "log10",
+    limits = c(risk_min, risk_max),
+    breaks = risk_breaks,
+    oob = scales::squish
+  ) +
+
+  coord_cartesian(
+    xlim = c(x_min, x_max),
+    ylim = c(y_min, y_max)
+  ) +
+
+  geom_contour(
+    aes(z = Risk),
+    breaks = contour_levels,
+    color = "red",
+    linewidth = 0.7
+  ) +
+
+  # 610 m setback circles
+  geom_path(
+    data = circle_df,
+    aes(x = x, y = y, group = id),
+    color = "black",
+    linewidth = 0.8,
+    inherit.aes = FALSE
+  ) +
+
+  labs(
+    title = "Background Excess Cancer Risk",
+    x = "X (m)",
+    y = "Y (m)"
+  ) +
+
+  theme_minimal()
+
+# view
+plot_cancer_background
+
+# save
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_background.png",
+  plot = plot_cancer_background,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+

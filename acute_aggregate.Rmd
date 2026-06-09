@@ -1,0 +1,762 @@
+---
+title: "acute aggregate analysis"
+output: html_document
+date: "2026-03-25"
+---
+
+##note - not presenting these figures in the paper; rather, presenting the acute result with background exposures because the large difference in background concentrations at commons for some species, like benzene, is not an issue for the acute exposures##
+
+
+#load libraries 
+```{r}
+library("dplyr")
+library("tidyr")
+library("Rmisc")
+library("terra")
+library("readxl")
+library("tidyverse")
+library("stringr")
+library("lubridate")
+library("ggh4x")
+detach(package:Rmisc)
+detach(package:plyr)
+```
+
+
+
+#load chronic "background" data
+```{r}
+file1 <- "~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/chronic_spatial_trend_monthly_gapfilled.xlsx"
+
+sheets <- excel_sheets(file1)
+
+chronic_list <- lapply(sheets, function(s) {
+
+  df <- read_excel(file1, sheet = s)
+
+  df_long <- df %>%
+    pivot_longer(
+      cols = starts_with("Distance_"),
+      names_to = "distance_ft",
+      values_to = "concentration_ppb"
+    ) %>%
+    mutate(
+      distance_ft = as.numeric(str_extract(distance_ft, "\\d+")),
+      chemical = s
+    )
+
+  return(df_long)
+})
+
+chronic <- bind_rows(chronic_list)
+
+chronic <- chronic %>%
+  mutate(chemical = recode(
+    chemical,
+    "aromatic medium" = "aromatic_medium",
+    "aliphatic low"   = "aliphatic_low",
+    "nonane" = "n_nonane",
+    "decane" = "n_decane"
+  ))
+```
+
+
+
+#load acute trigger cannister data
+```{r}
+file2 <- "~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/Broomfield-Triggered Canisters-VOC concentration vs Distances.xlsx"
+
+acute_raw <- read_excel(file2)
+
+meta_cols <- c(
+  "Start Date Time",
+  "Stop Date Time",
+  "Source Wellpad",
+  "Operation",
+  "Sampling Site",
+  "Distance (site, pad) ft",
+  "Note"
+)
+
+acute <- acute_raw %>%
+  select(
+    all_of(meta_cols),
+    matches("\\d+ft ppb$")   # keeps things like "benzene 500ft ppb"
+  )
+
+# reshape to long format
+acute_long <- acute %>%
+  pivot_longer(
+    cols = -all_of(meta_cols),
+    names_to = "chem_dist",
+    values_to = "concentration_ppb"
+  )
+
+#separate chemical and distance
+acute_long <- acute_long %>%
+  mutate(
+    chemical = str_extract(chem_dist, "^[^ ]+"),
+    distance_ft = as.numeric(str_extract(chem_dist, "\\d+(?=ft)"))
+  ) %>%
+  select(-chem_dist)
+```
+
+
+
+#filter dataset and combine chemicals into groups 
+```{r}
+group_vars <- c(
+  "Start Date Time",
+  "Stop Date Time",
+  "Source Wellpad",
+  "Operation",
+  "Sampling Site",
+  "Distance (site, pad) ft",
+  "distance_ft"
+)
+
+acute_long <- acute_long %>%
+  rename(concentration = concentration_ppb)
+
+#group chemical categories
+## xylenes
+xylenes_df <- acute_long %>%
+  filter(chemical %in% c("o_xylene", "m_p_xylene")) %>%
+  group_by(across(all_of(group_vars))) %>%
+  summarise(concentration = sum(concentration, na.rm = TRUE)) %>%
+  mutate(chemical = "xylenes")
+
+## aliphatic_low
+aliphatic_low_chems <- c(
+  "i_pentane", "n_pentane", "n_hexane", "n_heptane", "n_octane",
+  "cyclopentane", "cyclohexane", "methylcyclohexane",
+  "2_2_4_trimethylpentane", "2_3_4_trimethylpentane",
+  "2_4_dimethylpentane", "2_3_dimethylpentane",
+  "2_methylhexane", "3_methylhexane",
+  "2_methylheptane", "3_methylheptane",
+  "t_2_pentene", "1_pentene", "c_2_pentene",
+  "isoprene"
+)
+
+aliphatic_low_df <- acute_long %>%
+  filter(chemical %in% aliphatic_low_chems) %>%
+  group_by(across(all_of(group_vars))) %>%
+  summarise(concentration = sum(concentration, na.rm = TRUE)) %>%
+  mutate(chemical = "aliphatic_low")
+
+## aromatic_medium
+aromatic_medium_chems <- c(
+  "i_propylbenzene", "n_propylbenzene",
+  "2_ethyltoluene", "3_ethyltoluene", "4_ethyltoluene",
+  "1_2_3_trimethylbenzene", "1_2_4_trimethylbenzene", "1_3_5_trimethylbenzene",
+  "1_3_diethylbenzene", "1_4_diethylbenzene"
+)
+
+aromatic_medium_df <- acute_long %>%
+  filter(chemical %in% aromatic_medium_chems) %>%
+  group_by(across(all_of(group_vars))) %>%
+  summarise(concentration = sum(concentration, na.rm = TRUE)) %>%
+  mutate(chemical = "aromatic_medium")
+
+#remove unwanted chems
+drop_chems <- c(
+  # components now grouped
+  "o_xylene", "m_p_xylene",
+  aliphatic_low_chems,
+  aromatic_medium_chems,
+
+  # explicitly remove
+  "methane", "ethane", "propane",
+  "i_butane", "n_butane",
+  "ethene", "ethyne",
+  "t_2_butene", "1_butene", "c_2_butene",
+  "NMVOC"
+)
+
+acute_filtered <- acute_long %>%
+  filter(!chemical %in% drop_chems)
+
+#final clean dataset
+acute_clean <- bind_rows(
+  acute_filtered,
+  xylenes_df,
+  aliphatic_low_df,
+  aromatic_medium_df
+)
+
+#checks
+# check new chemical list
+sort(unique(acute_clean$chemical))
+
+# make sure grouped ones exist
+table(acute_clean$chemical %in% c("xylenes", "aliphatic_low", "aromatic_medium"))
+
+# check no duplicates per group
+dup_check <- acute_clean %>%
+  group_by(across(all_of(group_vars)), chemical) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  filter(n > 1)
+
+nrow(dup_check)
+
+setdiff(group_vars, names(acute_clean))
+
+setdiff(aliphatic_low_chems, unique(acute_long$chemical))
+```
+
+
+#calculate actual, 50th, and 95th percentile ozone concentrations
+```{r}
+ozone = read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/ozone_hourly_2018-2023.csv")
+
+#prepare data with time stamps
+ozone_clean <- ozone %>%
+  mutate(
+    Date = as.Date(Date.Local),
+    Hour = format(as.POSIXct(Time.Local, format = "%H:%M"), "%H"),
+    ozone_ppb = Sample.Measurement * 1000   # ppm → ppb
+  ) %>%
+  filter(lubridate::year(Date) >= 2019 & lubridate::year(Date) <= 2022)
+
+acute_time_index <- acute_clean %>%
+  mutate(
+    Date = as.Date(`Start Date Time`),
+    Hour = format(as.POSIXct(`Start Date Time`), "%H")
+  ) %>%
+  distinct(Date, Hour)
+
+#time-matched ozone concentrations (scenario 1)
+ozone_time_matched <- ozone_clean %>%
+  semi_join(acute_time_index, by = c("Date", "Hour")) %>%
+  group_by(Date, Hour) %>%
+  summarise(
+    ozone_time_matched = median(ozone_ppb, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#50th and 95th percentile concentrations
+ozone_p50 <- median(ozone_clean$ozone_ppb, na.rm = TRUE)
+ozone_p95 <- quantile(ozone_clean$ozone_ppb, 0.95, na.rm = TRUE)
+
+#final ozone in one df
+ozone_final <- ozone_time_matched %>%
+  mutate(
+    ozone_p50 = ozone_p50,
+    ozone_p95 = ozone_p95
+  )
+
+#checks
+# should match acute timestamps
+nrow(ozone_final)
+nrow(acute_time_index)
+
+# check missing ozone values
+sum(is.na(ozone_final$ozone_time_matched))
+
+```
+
+
+#match chemicl names to rfcs 
+```{r}
+rfcs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/RfCs_5-2026.csv")
+
+rfcs_acute <- rfcs %>%
+  dplyr::filter(Exposure == "acute")
+
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Benzene"] <- "benzene"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Toluene"] <- "toluene"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Ethylbenzene"] <- "ethylbenzene"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Xylenes"] <- "xylenes"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "n-nonane"] <- "n_nonane"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "n-decane"] <- "n_decane"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Aliphatic low"] <- "aliphatic_low"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Aromatic medium"] <- "aromatic_medium"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Styrene"] <- "styrene"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Trichloroethylene (TCE)"] <- "c2hcl3"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Tetrachloroethylene (PCE)"] <- "c2cl4"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Propene"] <- "propene"
+rfcs_acute$Chemical[rfcs_acute$Chemical == "Ozone"] <- "ozone"
+
+#check
+setdiff(acute_clean$chemical, rfcs_acute$Chemical)
+setdiff(rfcs_acute$Chemical, acute_clean$chemical)
+```
+
+
+#calculate HQs
+```{r}
+# --- 1. Prepare chronic dataset to match acute ---
+chronic_ready <- chronic %>%
+  rename(concentration = concentration_ppb) %>%
+  mutate(
+    Operation = NA_character_,
+    distance_ft = as.numeric(distance_ft)
+  ) %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    chemical,
+    concentration,
+    Operation
+  )
+
+# --- 2. Combine acute + chronic concentrations ---
+combined_df <- bind_rows(
+  acute_clean %>%
+    select(
+      `Start Date Time`,
+      `Source Wellpad`,
+      `Sampling Site`,
+      distance_ft,
+      chemical,
+      concentration,
+      Operation
+    ),
+  chronic_ready
+)
+
+# Sum concentrations per timestamp, site, chemical, distance
+combined_df <- combined_df %>%
+  group_by(`Start Date Time`, `Source Wellpad`, `Sampling Site`, distance_ft, chemical) %>%
+  summarise(
+    concentration_total = sum(concentration, na.rm = TRUE),
+    Operation = dplyr::first(na.omit(Operation)), # take acute Operation if available
+    .groups = "drop"
+  )
+
+# --- 3. Calculate chemical HQs ---
+chemical_hq <- combined_df %>%
+  filter(chemical != "ozone") %>%
+  left_join(
+    rfcs_acute %>% select(Chemical, Endpoint, RfC),
+    by = c("chemical" = "Chemical")
+  ) %>%
+  mutate(
+    HQ = if_else(!is.na(RfC), concentration_total / RfC, NA_real_)
+  )
+
+# --- 4. Calculate ozone HQs separately for the 3 scenarios ---
+ozone_hq <- ozone_final %>%
+  mutate(Chemical = "ozone") %>%               # add Chemical column for joining
+  left_join(
+    rfcs_acute %>% filter(Chemical == "ozone") %>% select(Chemical, Endpoint, RfC),
+    by = "Chemical"
+  ) %>%
+  mutate(
+    HQ_time = if_else(!is.na(RfC), ozone_time_matched / RfC, NA_real_),
+    HQ_p50  = if_else(!is.na(RfC), ozone_p50 / RfC, NA_real_),
+    HQ_p95  = if_else(!is.na(RfC), ozone_p95 / RfC, NA_real_)
+  ) %>%
+  select(
+    Date, Hour, Endpoint, RfC,
+    ozone_time_matched, ozone_p50, ozone_p95,
+    HQ_time, HQ_p50, HQ_p95
+  )
+```
+
+
+
+#calculate HIs
+```{r}
+# Sum HQs for chemicals by timestamp, site, distance, and endpoint
+chemical_hi <- chemical_hq %>%
+  group_by(`Start Date Time`, `Source Wellpad`, `Sampling Site`, distance_ft, Operation, Endpoint) %>%
+  summarise(
+    HI_chemicals = sum(HQ, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Add Date and Hour to chemical HI for matching to ozone
+chemical_hi <- chemical_hi %>%
+  mutate(
+    Date = as.Date(`Start Date Time`),
+    Hour = hour(`Start Date Time`)
+  )
+
+# Join ozone HQs to chemical HI
+ozone_hq <- ozone_hq %>%
+  mutate(Hour = as.numeric(Hour))
+
+hi_combined <- chemical_hi %>%
+  left_join(
+    ozone_hq %>%
+      rename(
+        HQ_ozone_time  = HQ_time,
+        HQ_ozone_p50   = HQ_p50,
+        HQ_ozone_p95   = HQ_p95
+      ),
+    by = c("Date", "Hour", "Endpoint")
+  )
+
+#calculate total HI for each ozone scenario
+hi_combined <- hi_combined %>%
+  mutate(
+    HQ_ozone_time = dplyr::coalesce(HQ_ozone_time, 0),
+    HQ_ozone_p50  = dplyr::coalesce(HQ_ozone_p50, 0),
+    HQ_ozone_p95  = dplyr::coalesce(HQ_ozone_p95, 0)
+  )
+
+hi_combined <- hi_combined %>%
+  mutate(
+    HI_total_time = HI_chemicals + HQ_ozone_time,
+    HI_total_p50  = HI_chemicals + HQ_ozone_p50,
+    HI_total_p95  = HI_chemicals + HQ_ozone_p95
+  )
+
+#clean up
+hi_final <- hi_combined %>%
+  filter(!is.na(Endpoint)) %>%   # remove rows with missing endpoints
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint,
+    HI_chemicals,
+    HI_total_time,
+    HI_total_p50,
+    HI_total_p95
+  )
+
+write.csv(hi_final, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/acute_HI.csv")
+```
+
+
+
+#plot HI by distance for an example trigger event
+```{r}
+#example for one trigger event
+plot_df <- hi_final %>%
+  filter(
+    `Source Wellpad` == "NWB",
+    `Sampling Site` == "UT2",
+    format(`Start Date Time`, "%Y-%m-%d %H:%M") == "2021-09-18 08:22",
+    Endpoint != "immunological"
+  )
+
+hi_distance_ex = ggplot(plot_df, aes(x = distance_ft, y = HI_total_time, color = Endpoint)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Distance (ft)",
+    y = "HI (Time Matched Ozone)",
+    color = "Endpoint",
+    title = "Hazard Index vs Distance"
+  ) +
+  theme_minimal() +
+  geom_hline(yintercept = 1, linetype = "dashed")
+
+hi_distance_ex
+
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/hi_distance_example.png",
+  plot = hi_distance_ex,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+
+#plot HI vs. distance for each endpoint, colored/multiple lines with different ozone scenarios averaged (and faceted) across O&G operation
+```{r}
+#reshape to long
+hi_long <- hi_final %>%
+  pivot_longer(
+    cols = c(HI_total_time, HI_total_p50, HI_total_p95),
+    names_to = "ozone_scenario",
+    values_to = "HI"
+  )
+
+#change ozone scenario names for graphing
+hi_long <- hi_long %>%
+  mutate(
+    ozone_scenario = recode(
+      ozone_scenario,
+      "HI_total_time" = "Time-matched",
+      "HI_total_p50"  = "Ozone P50",
+      "HI_total_p95"  = "Ozone P95"
+    )
+  )
+
+#summarize across Operations
+hi_summary <- hi_long %>%
+  group_by(Operation, Endpoint, distance_ft, ozone_scenario) %>%
+  summarise(
+    HI_mean   = mean(HI, na.rm = TRUE),
+    HI_median = median(HI, na.rm = TRUE),
+    HI_min    = min(HI, na.rm = TRUE),
+    HI_max    = max(HI, na.rm = TRUE),
+    HI_sd     = sd(HI, na.rm = TRUE),
+    n         = sum(!is.na(HI)),
+    HI_se     = HI_sd / sqrt(n),
+    .groups = "drop"
+  )
+
+
+#plot of each Endpoint colored by ozone senario and faceted by Operation
+plots_by_endpoint <- lapply(unique(hi_summary$Endpoint), function(ep) {
+  
+  df <- hi_summary %>%
+    filter(Endpoint == ep)
+  
+  x_breaks <- sort(unique(df$distance_ft))
+  x_breaks_thinned <- x_breaks[seq(1, length(x_breaks), by = 2)]
+  
+  ggplot(
+    df,
+    aes(
+      x = distance_ft,
+      y = HI_mean,
+      color = ozone_scenario,
+      group = ozone_scenario
+    )
+  ) +
+    geom_line(size = 1) +
+    geom_point() +
+    geom_errorbar(
+      aes(
+        ymin = HI_mean - HI_se,
+        ymax = HI_mean + HI_se
+      ),
+      width = 50,
+      alpha = 0.6
+    ) +
+    ggh4x::facet_wrap2(~ Operation, axes = "all") +
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    scale_x_continuous(breaks = x_breaks_thinned) +   
+    labs(
+      title = paste("Hazard Index vs Distance -", ep),
+      x = "Distance (ft)",
+      y = "Mean Hazard Index",
+      color = "Ozone Scenario"
+    ) +
+    theme_minimal()
+})
+
+#view plots
+plots_by_endpoint[[1]]
+plots_by_endpoint[[2]]
+plots_by_endpoint[[3]]
+plots_by_endpoint[[4]]
+plots_by_endpoint[[5]]
+plots_by_endpoint[[6]]
+plots_by_endpoint[[7]]
+plots_by_endpoint[[8]]
+plots_by_endpoint[[9]]
+plots_by_endpoint[[10]]
+plots_by_endpoint[[11]]
+
+#save plots
+# get endpoint names
+endpoint_names <- unique(hi_summary$Endpoint)
+
+# loop and save
+for (i in seq_along(plots_by_endpoint)) {
+  
+  # clean endpoint name for filename
+  ep_name <- endpoint_names[i] %>%
+    stringr::str_replace_all("[^A-Za-z0-9]", "_")
+  
+  ggsave(
+    filename = file.path(
+      "~/CO_CRA/CO_CRA_aggregate/output/acute",
+      paste0("HI_dist_operation_", ep_name, ".png")
+    ),
+    plot = plots_by_endpoint[[i]],
+    width = 10,
+    height = 6,
+    dpi = 300
+  )
+}
+
+#save summary info for reporting
+write.csv(hi_summary, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/HI_summary.csv")
+```
+
+
+
+## what chemicals are contributing across distance (where ozone contributes, looking at P95 scenario) - stacked bar graphs
+
+
+#combining HQ dataset for ozone and chemicals (VOCs)
+```{r}
+# --- chemical HQs ---
+chem_df <- chemical_hq %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint,
+    chemical,
+    HQ
+  )
+
+# --- ozone HQ (P95) expanded regionally ---
+ozone_hq_p95 <- ozone_hq %>%
+  select(Date, Hour, Endpoint, HQ_p95) %>%
+  rename(HQ = HQ_p95) %>%
+  mutate(chemical = "ozone")
+
+structure_df <- chemical_hq %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint
+  ) %>%
+  distinct() %>%
+  mutate(
+    Date = as.Date(`Start Date Time`),
+    Hour = lubridate::hour(`Start Date Time`)
+  )
+
+ozone_expanded <- structure_df %>%
+  left_join(ozone_hq_p95, by = c("Date", "Hour", "Endpoint")) %>%
+  filter(!is.na(HQ)) %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint,
+    chemical,
+    HQ
+  )
+
+# --- combine everything ---
+hq_all <- bind_rows(chem_df, ozone_expanded)
+```
+
+
+#calculating average (mean) HQ per distance for each endpoint, operation, and distance
+```{r}
+hq_all_clean <- hq_all %>%
+  filter(!is.na(HQ))
+
+hq_plot_df <- hq_all_clean %>%
+  group_by(Operation, Endpoint, distance_ft, chemical) %>%
+  summarise(
+    
+    n = sum(!is.na(HQ)),
+    
+    HQ_mean = mean(HQ, na.rm = TRUE),
+    HQ_median = median(HQ, na.rm = TRUE),
+    
+    HQ_sd = sd(HQ, na.rm = TRUE),
+    
+    HQ_se = ifelse(n > 0, HQ_sd / sqrt(n), NA_real_),
+    
+    HQ_min = min(HQ, na.rm = TRUE),
+    HQ_max = max(HQ, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+#QC - stacked HQ equals HI (ok if these are 0/near zero)
+hi_check <- hq_plot_df %>%
+  group_by(Operation, Endpoint, distance_ft) %>%
+  summarise(
+    HI_from_stack = sum(HQ_mean, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    hi_final %>%
+      group_by(Operation, Endpoint, distance_ft) %>%
+      summarise(
+        HI_actual = mean(HI_total_p95, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("Operation", "Endpoint", "distance_ft")
+  ) %>%
+  mutate(diff = HI_from_stack - HI_actual)
+
+summary(hi_check$diff)
+```
+
+
+#stacked bar plots
+```{r}
+plots_by_endpoint <- lapply(unique(hq_plot_df$Endpoint), function(ep) {
+  
+  df <- hq_plot_df %>%
+    filter(Endpoint == ep)
+  
+  ggplot(df, aes(
+    x = factor(distance_ft),
+    y = HQ_mean,
+    fill = chemical
+  )) +
+    
+    geom_col(position = "stack", width = 0.8) +
+    
+    facet_wrap(~ Operation) +
+    
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    
+    labs(
+      title = paste("Stacked HQ Contributions by Distance -", ep),
+      x = "Distance (ft)",
+      y = "Mean Hazard Quotient (stacked = total HI)",
+      fill = "Chemical"
+    ) +
+    
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+})
+
+#view plots
+plots_by_endpoint[[1]]
+plots_by_endpoint[[2]]
+plots_by_endpoint[[3]]
+plots_by_endpoint[[4]]
+plots_by_endpoint[[5]]
+plots_by_endpoint[[6]]
+plots_by_endpoint[[7]]
+plots_by_endpoint[[8]]
+plots_by_endpoint[[9]]
+plots_by_endpoint[[10]]
+plots_by_endpoint[[11]]
+
+#save plots
+endpoint_names <- unique(hq_plot_df$Endpoint)
+
+for (i in seq_along(plots_by_endpoint)) {
+  
+  ep_name <- endpoint_names[i] %>%
+    stringr::str_replace_all("[^A-Za-z0-9]", "_")
+  
+  ggsave(
+    filename = file.path(
+      "~/CO_CRA/CO_CRA_aggregate/output/acute",
+      paste0("HQ_dist_operation_bar_", ep_name, ".png")
+    ),
+    plot = plots_by_endpoint[[i]],
+    width = 11,
+    height = 7,
+    dpi = 300
+  )
+}
+
+#save HQ summary data
+write.csv(hq_plot_df, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/HQ_summary.csv")
+```
+
+
+
+
+
+
+
+
