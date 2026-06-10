@@ -57,6 +57,10 @@ chronic <- chronic %>%
     "nonane" = "n_nonane",
     "decane" = "n_decane"
   ))
+
+## save dataframe for reporting ##
+
+write.csv(chronic, file = "~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/acute_chronicmonthly_clean.csv")
 ```
 
 
@@ -201,6 +205,10 @@ nrow(dup_check)
 setdiff(group_vars, names(acute_clean))
 
 setdiff(aliphatic_low_chems, unique(acute_long$chemical))
+
+## save dataframe for reporting ##
+
+write.csv(acute_clean, file = "~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/acute_trigger_clean.csv")
 ```
 
 
@@ -252,6 +260,9 @@ nrow(acute_time_index)
 
 # check missing ozone values
 sum(is.na(ozone_final$ozone_time_matched))
+
+## save ozone data for reporting ##
+write.csv(ozone_final, file = "~/CO_CRA/CO_CRA_aggregate/data/broomfield/acute/acute_ozone_clean.csv")
 
 ```
 
@@ -355,6 +366,12 @@ ozone_hq <- ozone_final %>%
     ozone_time_matched, ozone_p50, ozone_p95,
     HQ_time, HQ_p50, HQ_p95
   )
+
+## save data for reporting, with XX ##
+
+write.csv(chemical_hq, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/acute_HQs_chemicals.csv")
+write.csv(ozone_hq, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/acute_HQs_ozone.csv")
+
 ```
 
 

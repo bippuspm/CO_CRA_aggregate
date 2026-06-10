@@ -154,6 +154,31 @@ all(sapply(annual_avg_list, dim) == dim(data_list[[1]][[1]]))
 
 # check values
 summary(as.vector(annual_avg_list[[1]]))
+
+## save data for reporting ##
+
+# create workbook
+wb <- createWorkbook()
+
+for (chem in names(annual_avg_list)) {
+
+  # add worksheet
+  addWorksheet(wb, sheetName = substr(chem, 1, 31))
+
+  # convert matrix to dataframe
+  chem_df <- as.data.frame(annual_avg_list[[chem]])
+
+  # write to worksheet
+  writeData(wb, sheet = substr(chem, 1, 31), x = chem_df)
+}
+
+# save workbook
+saveWorkbook(
+  wb,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/annual_average_chemical_grids_wbkg.xlsx",
+  overwrite = TRUE
+)
+
 ```
 
 
@@ -276,6 +301,29 @@ dim(TWA_list[[1]])
 
 # compare to original
 dim(data_list[[1]][[1]])
+
+## save data for reporting ##
+
+wb <- createWorkbook()
+
+for (chem in names(TWA_list)) {
+
+  addWorksheet(wb, sheetName = substr(chem, 1, 31))
+
+  chem_df <- as.data.frame(TWA_list[[chem]])
+
+  writeData(
+    wb,
+    sheet = substr(chem, 1, 31),
+    x = chem_df
+  )
+}
+
+saveWorkbook(
+  wb,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/TWA_chemical_grids_wbkg.xlsx",
+  overwrite = TRUE
+)
 ```
 
 
@@ -408,6 +456,41 @@ dim(HQ_ozone_test)
 dim(TWA_list[[1]])
 ```
 
+#save HQ files for reporting, saving an HQ file for each endpoint with chemicals in different tabs in the excel file, including ozone
+```{r}
+output_dir <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/raw_HQs"
+
+for (ep in endpoints) {
+
+  wb <- createWorkbook()
+
+  for (chem in names(HQ_list[[ep]])) {
+
+    if (is.null(HQ_list[[ep]][[chem]])) next
+
+    sheet_name <- substr(chem, 1, 31)
+
+    addWorksheet(wb, sheet_name)
+
+    chem_df <- as.data.frame(HQ_list[[ep]][[chem]])
+
+    writeData(
+      wb,
+      sheet = sheet_name,
+      x = chem_df
+    )
+  }
+
+  file_name <- paste0("HQ_chronic_wbkg_", ep, ".xlsx")
+
+  saveWorkbook(
+    wb,
+    file.path(output_dir, file_name),
+    overwrite = TRUE
+  )
+}
+```
+
 
 
 #calculate spatial chronic HIs for each endpoint
@@ -444,6 +527,38 @@ for (ep in names(HI_list)) {
   print(summary(as.vector(HI_list[[ep]])))
   cat("\n")
 }
+
+## save data for reporting in one file with endpoint separated by tabs ##
+
+output_file <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/chronic_HIs_wbkg.xlsx"
+
+wb <- createWorkbook()
+
+for (ep in names(HI_list)) {
+
+  # skip empty endpoints (safety)
+  if (is.null(HI_list[[ep]])) next
+
+  # create sheet (truncate to Excel limit)
+  sheet_name <- substr(ep, 1, 31)
+
+  addWorksheet(wb, sheet_name)
+
+  # convert matrix → data.frame for Excel
+  hi_df <- as.data.frame(HI_list[[ep]])
+
+  writeData(
+    wb,
+    sheet = sheet_name,
+    x = hi_df
+  )
+}
+
+saveWorkbook(
+  wb,
+  file = output_file,
+  overwrite = TRUE
+)
 ```
 
 
@@ -687,6 +802,37 @@ summary(as.vector(CancerRisk_total))
 
 # inspect one chemical contribution
 summary(as.vector(CancerRisk_list[[1]]))
+
+## save cancer risk data for each chemical separated by tabs into one excel file for reporting ##
+
+output_file <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_risk_wbkg.xlsx"
+
+wb <- createWorkbook()
+
+for (chem in names(CancerRisk_list)) {
+
+  # skip missing/empty entries (safety)
+  if (is.null(CancerRisk_list[[chem]])) next
+
+  sheet_name <- substr(chem, 1, 31)
+
+  addWorksheet(wb, sheet_name)
+
+  chem_df <- as.data.frame(CancerRisk_list[[chem]])
+
+  writeData(
+    wb,
+    sheet = sheet_name,
+    x = chem_df
+  )
+}
+
+saveWorkbook(
+  wb,
+  file = output_file,
+  overwrite = TRUE
+)
+
 ```
 
 
@@ -929,6 +1075,36 @@ summary(as.vector(CancerRisk_background))
 lapply(
   CancerRisk_background_list,
   function(x) summary(as.vector(x))
+)
+
+## save risks into one excel file with chemicals separated by tabs for reporting ##
+
+output_file <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_risk_backgroundonly.xlsx"
+
+wb <- createWorkbook()
+
+for (chem in names(CancerRisk_background_list)) {
+
+  # skip missing entries (safety)
+  if (is.null(CancerRisk_background_list[[chem]])) next
+
+  sheet_name <- substr(chem, 1, 31)
+
+  addWorksheet(wb, sheet_name)
+
+  chem_df <- as.data.frame(CancerRisk_background_list[[chem]])
+
+  writeData(
+    wb,
+    sheet = sheet_name,
+    x = chem_df
+  )
+}
+
+saveWorkbook(
+  wb,
+  file = output_file,
+  overwrite = TRUE
 )
 ```
 
