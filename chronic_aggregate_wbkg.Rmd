@@ -15,6 +15,10 @@ library("readxl")
 library("tidyverse")
 library("lubridate")
 library("viridis")
+library("sf")
+library("openxlsx")
+library("patchwork")
+library("ggplot2")
 detach(package:Rmisc)
 detach(package:plyr)
 ```
@@ -740,6 +744,979 @@ for (i in seq_along(plots)) {
 ```
 
 
+### getting range of HIs per endpoint at 2,000 ft ###
+
+
+#filter for only grids that overlap with the 2,000 ft setback distance 
+```{r}
+# target radius
+radius <- 610
+
+# grid resolution
+grid_res <- 50
+half_res <- grid_res / 2
+
+# make grid-cell polygons from grid-center coordinates
+grid_cells <- data.frame(
+  cell_id = seq_along(as.vector(x)),
+  x = as.vector(x),
+  y = as.vector(y)
+) %>%
+  rowwise() %>%
+  mutate(
+    geometry = list(
+      st_polygon(list(matrix(
+        c(
+          x - half_res, y - half_res,
+          x + half_res, y - half_res,
+          x + half_res, y + half_res,
+          x - half_res, y + half_res,
+          x - half_res, y - half_res
+        ),
+        ncol = 2,
+        byrow = TRUE
+      )))
+    )
+  ) %>%
+  ungroup() %>%
+  st_as_sf(crs = NA)
+
+# make wellpad points
+wellpad_sf <- st_as_sf(
+  wellpad_cords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+# create 610 m circle boundaries only, not filled buffers
+circle_lines <- wellpad_sf %>%
+  st_buffer(dist = radius) %>%
+  st_boundary()
+
+# identify grid cells that intersect any 610 m circle line
+intersects_610m <- st_intersects(grid_cells, circle_lines)
+
+grid_cells$at_610m <- lengths(intersects_610m) > 0
+
+# check number of selected cells
+sum(grid_cells$at_610m)
+```
+
+
+#get the range of HIs for each endpoint in these grids for reporting
+```{r}
+calc_HI_at_610m <- function(mat, ep) {
+
+  vals <- as.vector(mat)
+
+  vals_610m <- vals[grid_cells$at_610m]
+
+  vals_610m <- vals_610m[!is.na(vals_610m)]
+
+  data.frame(
+    endpoint = ep,
+    n_grids = length(vals_610m),
+    min_HI = min(vals_610m),
+    median_HI = median(vals_610m),
+    mean_HI = mean(vals_610m),
+    max_HI = max(vals_610m)
+  )
+}
+
+HI_610m_summary <- do.call(
+  rbind,
+  lapply(names(HI_list), function(ep) {
+    calc_HI_at_610m(HI_list[[ep]], ep)
+  })
+)
+
+rownames(HI_610m_summary) <- NULL
+
+HI_610m_summary
+
+write.csv(
+  HI_610m_summary,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_at_2000ft_wbkg.csv",
+  row.names = FALSE
+)
+```
+
+
+
+
+#summary of background-only HIs at 2,000 ft 
+```{r}
+# files
+# files
+hi_wbkg_file <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/chronic_HIs_wbkg.xlsx"
+hi_nobkg_file <- "~/CO_CRA/CO_CRA_aggregate/output/chronic/chronic_HIs.xlsx"
+
+# endpoints/sheets
+endpoints <- intersect(
+  excel_sheets(hi_wbkg_file),
+  excel_sheets(hi_nobkg_file)
+)
+
+# summary function
+calc_summary_at_610m <- function(mat, at_610m, endpoint_name) {
+
+  vals <- as.vector(mat)
+  vals <- vals[at_610m]
+  vals <- vals[!is.na(vals)]
+
+  data.frame(
+    endpoint = endpoint_name,
+    n_grids = length(vals),
+    min_HI = min(vals),
+    median_HI = median(vals),
+    mean_HI = mean(vals),
+    max_HI = max(vals)
+  )
+}
+
+# read HI matrix function
+read_hi_matrix <- function(file, sheet) {
+
+  df <- read_excel(
+    file,
+    sheet = sheet,
+    col_names = FALSE
+  )
+
+  df <- df %>%
+    mutate(across(everything(), as.numeric))
+
+  as.matrix(df)
+}
+
+# calculate background-only summary one endpoint at a time
+HI_background_610m_summary <- do.call(
+  rbind,
+  lapply(endpoints, function(ep) {
+
+    hi_wbkg <- read_hi_matrix(hi_wbkg_file, ep)
+    hi_nobkg <- read_hi_matrix(hi_nobkg_file, ep)
+
+    stopifnot(dim(hi_wbkg) == dim(hi_nobkg))
+
+    hi_bkg <- hi_wbkg - hi_nobkg
+
+    calc_summary_at_610m(
+      mat = hi_bkg,
+      at_610m = grid_cells$at_610m,
+      endpoint_name = ep
+    )
+  })
+)
+
+HI_background_610m_summary
+
+write.csv(
+  HI_background_610m_summary,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_at_2000ft_bkgonly.csv",
+  row.names = FALSE
+)
+```
+
+
+
+
+
+### chronic HI summary table for all endpoints at all distances, for UOGD, background, total ###
+
+
+
+#create spatial boundaries and extract grids that match them
+```{r}
+
+# ------------------------------------------------------------
+# 1. Define input and output files
+# ------------------------------------------------------------
+
+chronic_hi_wbkg_file <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/chronic_HIs_wbkg.xlsx"
+
+chronic_hi_nobkg_file <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/chronic_HIs.xlsx"
+
+chronic_hi_distance_output_csv <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_500_to_5000ft_all_scenarios.csv"
+
+chronic_hi_distance_output_xlsx <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_500_to_5000ft_all_scenarios.xlsx"
+
+
+# ------------------------------------------------------------
+# 2. Define distances
+# ------------------------------------------------------------
+
+distance_lookup <- data.frame(
+  distance_ft = seq(
+    from = 500,
+    to = 5000,
+    by = 500
+  )
+) %>%
+  mutate(
+    distance_m = distance_ft * 0.3048
+  )
+
+distance_lookup
+
+# Expected distances:
+# 500, 1000, 1500, 2000, 2500,
+# 3000, 3500, 4000, 4500, 5000 ft
+
+
+# ------------------------------------------------------------
+# 3. Load spatial information
+#
+# These are loaded into newly named objects so the existing
+# x, y, dist_source, grid_cells, and wellpad_sf objects are
+# not modified.
+# ------------------------------------------------------------
+
+chronic_x <- as.matrix(
+  read.csv(
+    "~/CO_CRA/CO_CRA_aggregate/data/broomfield/XX_coordinates.csv",
+    header = FALSE
+  )
+)
+
+chronic_y <- as.matrix(
+  read.csv(
+    "~/CO_CRA/CO_CRA_aggregate/data/broomfield/YY_coordinates.csv",
+    header = FALSE
+  )
+)
+
+chronic_dist_source <- as.matrix(
+  read.csv(
+    "~/CO_CRA/CO_CRA_aggregate/data/broomfield/distance_to_nearest_source.csv"
+  )
+)
+
+chronic_wellpad_coords <- read.csv(
+  "~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv"
+)
+
+
+# ------------------------------------------------------------
+# 4. Check that the spatial matrices have matching dimensions
+# ------------------------------------------------------------
+
+stopifnot(
+  identical(
+    dim(chronic_x),
+    dim(chronic_y)
+  )
+)
+
+stopifnot(
+  identical(
+    dim(chronic_x),
+    dim(chronic_dist_source)
+  )
+)
+
+chronic_grid_nrow <- nrow(chronic_x)
+chronic_grid_ncol <- ncol(chronic_x)
+chronic_grid_ncells <- length(chronic_x)
+
+data.frame(
+  n_rows = chronic_grid_nrow,
+  n_columns = chronic_grid_ncol,
+  n_cells = chronic_grid_ncells
+)
+
+
+# ------------------------------------------------------------
+# 5. Create the <25 m exclusion mask
+#
+# This recreates the same exclusion used in the main workflow.
+# It is applied to all three scenarios after reading the files.
+# ------------------------------------------------------------
+
+chronic_keep_mask <- chronic_dist_source >= 25
+
+sum(chronic_keep_mask, na.rm = TRUE)
+sum(!chronic_keep_mask, na.rm = TRUE)
+
+
+# ------------------------------------------------------------
+# 6. Build grid-cell polygons
+#
+# The concentration/HIs represent 50 m x 50 m grid cells.
+# The x and y values are treated as grid-cell centers.
+# ------------------------------------------------------------
+
+chronic_grid_res <- 50
+chronic_half_res <- chronic_grid_res / 2
+
+chronic_grid_df <- data.frame(
+  cell_id = seq_len(chronic_grid_ncells),
+  x = as.vector(chronic_x),
+  y = as.vector(chronic_y)
+)
+
+chronic_grid_geometry <- lapply(
+  seq_len(nrow(chronic_grid_df)),
+  function(i) {
+
+    cell_x <- chronic_grid_df$x[i]
+    cell_y <- chronic_grid_df$y[i]
+
+    st_polygon(
+      list(
+        matrix(
+          c(
+            cell_x - chronic_half_res,
+            cell_y - chronic_half_res,
+
+            cell_x + chronic_half_res,
+            cell_y - chronic_half_res,
+
+            cell_x + chronic_half_res,
+            cell_y + chronic_half_res,
+
+            cell_x - chronic_half_res,
+            cell_y + chronic_half_res,
+
+            cell_x - chronic_half_res,
+            cell_y - chronic_half_res
+          ),
+          ncol = 2,
+          byrow = TRUE
+        )
+      )
+    )
+  }
+)
+
+chronic_grid_cells_sf <- st_sf(
+  chronic_grid_df,
+  geometry = st_sfc(chronic_grid_geometry)
+)
+
+
+# ------------------------------------------------------------
+# 7. Create well-pad spatial points
+# ------------------------------------------------------------
+
+chronic_wellpad_sf <- st_as_sf(
+  chronic_wellpad_coords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+
+# ------------------------------------------------------------
+# 8. Create one grid-cell selection mask per distance
+#
+# A cell is selected when its polygon intersects the circle
+# boundary at the specified distance around any well pad.
+# ------------------------------------------------------------
+
+chronic_distance_masks <- setNames(
+  vector(
+    mode = "list",
+    length = nrow(distance_lookup)
+  ),
+  distance_lookup$distance_ft
+)
+
+for (i in seq_len(nrow(distance_lookup))) {
+
+  current_distance_ft <- distance_lookup$distance_ft[i]
+  current_distance_m <- distance_lookup$distance_m[i]
+
+  # Create separate circle boundaries around all well pads
+  current_circle_lines <- chronic_wellpad_sf %>%
+    st_buffer(
+      dist = current_distance_m
+    ) %>%
+    st_boundary()
+
+  # Determine which grid polygons intersect at least one line
+  current_intersections <- st_intersects(
+    chronic_grid_cells_sf,
+    current_circle_lines
+  )
+
+  current_mask <- lengths(current_intersections) > 0
+
+  chronic_distance_masks[[
+    as.character(current_distance_ft)
+  ]] <- current_mask
+}
+
+
+# ------------------------------------------------------------
+# 9. Check how many unique grid cells are selected at each
+#    distance before applying missing-HI exclusions
+# ------------------------------------------------------------
+
+distance_grid_counts <- data.frame(
+  distance_ft = distance_lookup$distance_ft,
+  distance_m = distance_lookup$distance_m,
+  n_spatial_grids = vapply(
+    chronic_distance_masks,
+    sum,
+    numeric(1)
+  )
+)
+
+distance_grid_counts
+```
+
+
+
+#formatting and creating functions to get the summary data for the 3 scenarios: 1) UOGD, 2) background, 3) total
+```{r}
+
+# ------------------------------------------------------------
+# 10. Function to safely read an HI matrix from Excel
+#
+# The workbooks were created using openxlsx::writeData(),
+# which writes column names by default. Therefore:
+#
+#   colNames = TRUE
+#
+# is used here.
+#
+# skipEmptyRows and skipEmptyCols are disabled to preserve
+# the original matrix dimensions.
+# ------------------------------------------------------------
+
+read_chronic_hi_matrix <- function(
+  file,
+  sheet,
+  expected_nrow,
+  expected_ncol
+) {
+
+  hi_df <- openxlsx::read.xlsx(
+    xlsxFile = file,
+    sheet = sheet,
+    colNames = TRUE,
+    skipEmptyRows = FALSE,
+    skipEmptyCols = FALSE,
+    check.names = FALSE
+  )
+
+  # Convert every column to numeric
+  hi_df[] <- lapply(
+    hi_df,
+    function(z) {
+      suppressWarnings(
+        as.numeric(z)
+      )
+    }
+  )
+
+  hi_mat <- as.matrix(hi_df)
+
+  storage.mode(hi_mat) <- "double"
+
+  if (
+    nrow(hi_mat) != expected_nrow ||
+    ncol(hi_mat) != expected_ncol
+  ) {
+
+    stop(
+      paste0(
+        "Dimension mismatch for sheet '",
+        sheet,
+        "' in file:\n",
+        file,
+        "\n\nExpected: ",
+        expected_nrow,
+        " rows x ",
+        expected_ncol,
+        " columns\n",
+        "Found: ",
+        nrow(hi_mat),
+        " rows x ",
+        ncol(hi_mat),
+        " columns."
+      )
+    )
+  }
+
+  hi_mat
+}
+
+
+# ------------------------------------------------------------
+# 11. Identify endpoints available in both workbooks
+# ------------------------------------------------------------
+
+chronic_endpoints_wbkg <- excel_sheets(
+  chronic_hi_wbkg_file
+)
+
+chronic_endpoints_nobkg <- excel_sheets(
+  chronic_hi_nobkg_file
+)
+
+chronic_endpoints <- intersect(
+  chronic_endpoints_wbkg,
+  chronic_endpoints_nobkg
+)
+
+chronic_endpoints
+
+# Check whether either workbook has unmatched sheets
+setdiff(
+  chronic_endpoints_wbkg,
+  chronic_endpoints_nobkg
+)
+
+setdiff(
+  chronic_endpoints_nobkg,
+  chronic_endpoints_wbkg
+)
+
+
+# ------------------------------------------------------------
+# 12. Summary function
+#
+# n is the number of nonmissing grid-cell HI values included
+# for that endpoint, scenario, and distance.
+# ------------------------------------------------------------
+
+calculate_chronic_hi_distance_summary <- function(
+  mat,
+  distance_mask,
+  endpoint_name,
+  scenario_name,
+  distance_ft,
+  distance_m
+) {
+
+  vals <- as.vector(mat)
+
+  if (length(vals) != length(distance_mask)) {
+    stop(
+      paste0(
+        "The HI matrix and spatial distance mask have ",
+        "different lengths for endpoint: ",
+        endpoint_name
+      )
+    )
+  }
+
+  vals <- vals[distance_mask]
+  vals <- vals[is.finite(vals)]
+
+  n_values <- length(vals)
+
+  if (n_values == 0) {
+
+    return(
+      data.frame(
+        scenario = scenario_name,
+        endpoint = endpoint_name,
+        distance_ft = distance_ft,
+        distance_m = distance_m,
+        n = 0,
+        min = NA_real_,
+        median = NA_real_,
+        mean = NA_real_,
+        max = NA_real_,
+        sd = NA_real_,
+        se = NA_real_
+      )
+    )
+  }
+
+  value_sd <- if (n_values > 1) {
+    sd(vals)
+  } else {
+    NA_real_
+  }
+
+  value_se <- if (n_values > 1) {
+    value_sd / sqrt(n_values)
+  } else {
+    NA_real_
+  }
+
+  data.frame(
+    scenario = scenario_name,
+    endpoint = endpoint_name,
+    distance_ft = distance_ft,
+    distance_m = distance_m,
+    n = n_values,
+    min = min(vals),
+    median = median(vals),
+    mean = mean(vals),
+    max = max(vals),
+    sd = value_sd,
+    se = value_se
+  )
+}
+
+
+# ------------------------------------------------------------
+# 13. Read each endpoint and calculate all three scenarios
+#
+# Scenario definitions:
+#
+# Without background:
+#   HI from chronic_HIs.xlsx
+#
+# Background only:
+#   HI with background - HI without background
+#
+# Total:
+#   HI from chronic_HIs_wbkg.xlsx
+#
+# Processing one endpoint at a time avoids retaining all
+# matrices in memory.
+# ------------------------------------------------------------
+
+chronic_hi_distance_summary_list <- list()
+
+summary_counter <- 1
+
+for (ep in chronic_endpoints) {
+
+  message(
+    "Processing chronic HI distance summaries for endpoint: ",
+    ep
+  )
+
+  # Read total / with-background HI
+  hi_total_mat <- read_chronic_hi_matrix(
+    file = chronic_hi_wbkg_file,
+    sheet = ep,
+    expected_nrow = chronic_grid_nrow,
+    expected_ncol = chronic_grid_ncol
+  )
+
+  # Read without-background HI
+  hi_nobkg_mat <- read_chronic_hi_matrix(
+    file = chronic_hi_nobkg_file,
+    sheet = ep,
+    expected_nrow = chronic_grid_nrow,
+    expected_ncol = chronic_grid_ncol
+  )
+
+  stopifnot(
+    identical(
+      dim(hi_total_mat),
+      dim(hi_nobkg_mat)
+    )
+  )
+
+  # Calculate background-only HI
+  hi_background_mat <- hi_total_mat - hi_nobkg_mat
+
+  # Apply the same <25 m mask to every scenario
+  hi_total_mat[!chronic_keep_mask] <- NA_real_
+  hi_nobkg_mat[!chronic_keep_mask] <- NA_real_
+  hi_background_mat[!chronic_keep_mask] <- NA_real_
+
+  # Store the three scenario matrices temporarily
+  endpoint_scenario_mats <- list(
+    "Without background" = hi_nobkg_mat,
+    "Background only" = hi_background_mat,
+    "Total" = hi_total_mat
+  )
+
+  # Summarize every scenario at every distance
+  for (scenario_name in names(endpoint_scenario_mats)) {
+
+    scenario_mat <- endpoint_scenario_mats[[
+      scenario_name
+    ]]
+
+    for (i in seq_len(nrow(distance_lookup))) {
+
+      current_distance_ft <- distance_lookup$distance_ft[i]
+      current_distance_m <- distance_lookup$distance_m[i]
+
+      current_distance_mask <-
+        chronic_distance_masks[[
+          as.character(current_distance_ft)
+        ]]
+
+      chronic_hi_distance_summary_list[[
+        summary_counter
+      ]] <- calculate_chronic_hi_distance_summary(
+        mat = scenario_mat,
+        distance_mask = current_distance_mask,
+        endpoint_name = ep,
+        scenario_name = scenario_name,
+        distance_ft = current_distance_ft,
+        distance_m = current_distance_m
+      )
+
+      summary_counter <- summary_counter + 1
+    }
+  }
+
+  # Remove temporary matrices before processing next endpoint
+  rm(
+    hi_total_mat,
+    hi_nobkg_mat,
+    hi_background_mat,
+    endpoint_scenario_mats
+  )
+}
+
+
+# ------------------------------------------------------------
+# 14. Combine all results
+# ------------------------------------------------------------
+
+chronic_hi_distance_summary <- bind_rows(
+  chronic_hi_distance_summary_list
+) %>%
+  mutate(
+    scenario = factor(
+      scenario,
+      levels = c(
+        "Without background",
+        "Background only",
+        "Total"
+      )
+    )
+  ) %>%
+  arrange(
+    endpoint,
+    distance_ft,
+    scenario
+  )
+
+chronic_hi_distance_summary
+```
+
+
+
+
+
+#checks and saving
+```{r}
+
+# ------------------------------------------------------------
+# 15. Validate expected number of rows
+#
+# Expected:
+#   number of endpoints
+#   x 10 distances
+#   x 3 scenarios
+# ------------------------------------------------------------
+
+expected_summary_rows <-
+  length(chronic_endpoints) *
+  nrow(distance_lookup) *
+  3
+
+actual_summary_rows <-
+  nrow(chronic_hi_distance_summary)
+
+data.frame(
+  expected_rows = expected_summary_rows,
+  actual_rows = actual_summary_rows,
+  rows_match = expected_summary_rows == actual_summary_rows
+)
+
+stopifnot(
+  expected_summary_rows == actual_summary_rows
+)
+
+
+# ------------------------------------------------------------
+# 16. Additional checks
+# ------------------------------------------------------------
+
+# Number of rows per endpoint
+chronic_hi_distance_summary %>%
+  count(endpoint)
+
+# Number of rows per scenario
+chronic_hi_distance_summary %>%
+  count(scenario)
+
+# Number of rows per distance
+chronic_hi_distance_summary %>%
+  count(distance_ft)
+
+
+# ------------------------------------------------------------
+# 17. Save combined long-format CSV
+# ------------------------------------------------------------
+
+write.csv(
+  chronic_hi_distance_summary,
+  file = chronic_hi_distance_output_csv,
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 18. Create a wider reporting version
+# ------------------------------------------------------------
+
+chronic_hi_distance_summary_wide <-
+  chronic_hi_distance_summary %>%
+  mutate(
+    scenario = as.character(scenario),
+    scenario = recode(
+      scenario,
+      "Without background" = "without_background",
+      "Background only" = "background_only",
+      "Total" = "total"
+    )
+  ) %>%
+  pivot_wider(
+    id_cols = c(
+      endpoint,
+      distance_ft,
+      distance_m
+    ),
+    names_from = scenario,
+    values_from = c(
+      n,
+      min,
+      median,
+      mean,
+      max,
+      sd,
+      se
+    ),
+    names_glue = "{scenario}_{.value}"
+  ) %>%
+  select(
+    endpoint,
+    distance_ft,
+    distance_m,
+
+    # Without background
+    without_background_n,
+    without_background_min,
+    without_background_median,
+    without_background_mean,
+    without_background_max,
+    without_background_sd,
+    without_background_se,
+
+    # Background only
+    background_only_n,
+    background_only_min,
+    background_only_median,
+    background_only_mean,
+    background_only_max,
+    background_only_sd,
+    background_only_se,
+
+    # Total
+    total_n,
+    total_min,
+    total_median,
+    total_mean,
+    total_max,
+    total_sd,
+    total_se
+  ) %>%
+  arrange(
+    endpoint,
+    distance_ft
+  )
+
+chronic_hi_distance_summary_wide
+
+
+# ------------------------------------------------------------
+# 19. Save an Excel workbook with long and wide tables
+# ------------------------------------------------------------
+
+chronic_summary_wb <- createWorkbook()
+
+addWorksheet(
+  chronic_summary_wb,
+  "Long summary"
+)
+
+writeData(
+  chronic_summary_wb,
+  sheet = "Long summary",
+  x = chronic_hi_distance_summary
+)
+
+addWorksheet(
+  chronic_summary_wb,
+  "Wide summary"
+)
+
+writeData(
+  chronic_summary_wb,
+  sheet = "Wide summary",
+  x = chronic_hi_distance_summary_wide
+)
+
+addWorksheet(
+  chronic_summary_wb,
+  "Distance grid counts"
+)
+
+writeData(
+  chronic_summary_wb,
+  sheet = "Distance grid counts",
+  x = distance_grid_counts
+)
+
+# Optional formatting
+freezePane(
+  chronic_summary_wb,
+  sheet = "Long summary",
+  firstRow = TRUE
+)
+
+freezePane(
+  chronic_summary_wb,
+  sheet = "Wide summary",
+  firstRow = TRUE
+)
+
+freezePane(
+  chronic_summary_wb,
+  sheet = "Distance grid counts",
+  firstRow = TRUE
+)
+
+setColWidths(
+  chronic_summary_wb,
+  sheet = "Long summary",
+  cols = 1:ncol(chronic_hi_distance_summary),
+  widths = "auto"
+)
+
+setColWidths(
+  chronic_summary_wb,
+  sheet = "Wide summary",
+  cols = 1:ncol(chronic_hi_distance_summary_wide),
+  widths = "auto"
+)
+
+setColWidths(
+  chronic_summary_wb,
+  sheet = "Distance grid counts",
+  cols = 1:ncol(distance_grid_counts),
+  widths = "auto"
+)
+
+saveWorkbook(
+  chronic_summary_wb,
+  file = chronic_hi_distance_output_xlsx,
+  overwrite = TRUE
+)
+```
+
+
+
 
 
 
@@ -875,6 +1852,13 @@ write.csv(
 
 #map cancer risks
 ```{r}
+#define bounds
+x_min <- 495300
+x_max <- 501700
+
+y_min <- 4424300
+y_max <- 4427200
+
 make_df <- function(mat, x, y) {
   data.frame(
     x = as.vector(x),
@@ -884,33 +1868,37 @@ make_df <- function(mat, x, y) {
 }
 
 # read well pad coordinates
-wellpad_cords <- read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv")
-
-# create 610 m radius circles around each well pad
-radius <- 610
-
-circle_df <- do.call(
-  rbind,
-  lapply(seq_len(nrow(wellpad_cords)), function(i) {
-
-    theta <- seq(0, 2 * pi, length.out = 200)
-
-    data.frame(
-      id = i,
-      x = wellpad_cords$X[i] + radius * cos(theta),
-      y = wellpad_cords$Y[i] + radius * sin(theta)
-    )
-  })
+wellpad_cords <- read.csv(
+  "~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv"
 )
 
+# create 610 m dissolved/unioned setback boundary
+radius <- 610
+
+wellpad_sf <- st_as_sf(
+  wellpad_cords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+setback_boundary <- wellpad_sf %>%
+  st_buffer(dist = radius) %>%
+  st_union() %>%
+  st_boundary()
+
+setback_boundary_df <- setback_boundary %>%
+  st_as_sf() %>%
+  mutate(id = row_number()) %>%
+  st_cast("LINESTRING") %>%
+  st_coordinates() %>%
+  as.data.frame()
+
 # fixed/define legend
-risk_min <- 8.5e-8
-risk_max <- 5.2e-4
+risk_min <- 1.5e-4
+risk_max <- 5.5e-4
 
-# log-spaced breaks for clean legend readability
-risk_breaks <- c(1e-7, 1e-6, 1e-5, 1e-4, 5e-4)
+risk_breaks <- c(1.5e-4, 2.5e-4, 3.5e-4, 4.5e-4, 5.5e-4)
 
-# regulatory contour limits
 contour_levels <- c(1e-6, 1e-4)
 
 # make data
@@ -921,33 +1909,35 @@ plot_cancer_tot <- ggplot(df, aes(x = x, y = y, fill = Risk)) +
 
   geom_raster() +
 
-  # 610 m setback circles
+  # outer 610 m setback boundary only
   geom_path(
-    data = circle_df,
-    aes(x = x, y = y, group = id),
+    data = setback_boundary_df,
+    aes(x = X, y = Y, group = L1),
     color = "black",
     linewidth = 0.8,
     inherit.aes = FALSE
   ) +
 
-  scale_fill_viridis_c(
-    name = "Cancer Risk",
-    trans = "log10",
-    limits = c(risk_min, risk_max),
-    breaks = risk_breaks,
-    oob = scales::squish
-  ) +
-
-  coord_cartesian(
-    xlim = c(x_min, x_max),
-    ylim = c(y_min, y_max)
-  ) +
+scale_fill_viridis_c(
+  name = "Cancer Risk",
+  trans = "log10",
+  limits = c(risk_min, risk_max),
+  breaks = risk_breaks,
+  labels = scales::label_scientific(digits = 2),
+  oob = scales::squish
+) +
 
   geom_contour(
     aes(z = Risk),
     breaks = contour_levels,
     color = "red",
     linewidth = 0.7
+  ) +
+
+  coord_equal(
+    xlim = c(x_min, x_max),
+    ylim = c(y_min, y_max),
+    expand = FALSE
   ) +
 
   labs(
@@ -958,61 +1948,13 @@ plot_cancer_tot <- ggplot(df, aes(x = x, y = y, fill = Risk)) +
 
   theme_minimal()
 
-# view plot
 plot_cancer_tot
 
-# save
 ggsave(
   filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_tot_wbkg.png",
   plot = plot_cancer_tot,
   width = 6,
-  height = 5,
-  dpi = 300
-)
-```
-
-
-#map of just benzene to compare (NOT USING THIS ANYMORE - NOT UPDATING LEGEND)
-```{r}
-# regulatory limits
-contour_levels <- c(1e-6, 1e-5, 1e-4)
-
-# --- select benzene ---
-benzene_mat <- CancerRisk_list[["benzene"]]
-
-# create dataframe
-df <- make_df(benzene_mat, x, y)
-
-plot_cancer_benzene <- ggplot(df, aes(x = x, y = y, fill = Risk)) +
-  geom_raster() +
-  scale_fill_viridis_c(
-    name = "Cancer Risk",
-    trans = "log10"
-  ) +
-  coord_cartesian(
-    xlim = c(x_min, x_max),
-    ylim = c(y_min, y_max)
-  ) +
-  geom_contour(
-    aes(z = Risk),
-    breaks = contour_levels,
-    color = "red",
-    linewidth = 0.7
-  ) +
-  labs(
-    title = "Excess Cancer Risk - Benzene",
-    x = "X (m)",
-    y = "Y (m)"
-  ) +
-  theme_minimal()
-
-plot_cancer_benzene
-
-ggsave(
-  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_benzene_wbkg.png",
-  plot = plot_cancer_benzene,
-  width = 6,
-  height = 5,
+  height = 6,
   dpi = 300
 )
 ```
@@ -1020,10 +1962,7 @@ ggsave(
 
 
 
-
-## map of just background cancer risk ## (LEFT OFF HERE, THEN NEED TO ADD SETBACK DISTANCE TO CANCER MAPS)
-
-
+## map of just background cancer risk ## 
 
 
 
@@ -1158,18 +2097,36 @@ make_df <- function(mat, x, y) {
   )
 }
 
-# fixed legend (keep same as wbkg map for direct comparison)
-
-risk_min <- 8.5e-8
-risk_max <- 5.2e-4
-
-risk_breaks <- c(
-  1e-7,
-  1e-6,
-  1e-5,
-  1e-4,
-  5e-4
+# read well pad coordinates if not already loaded
+wellpad_cords <- read.csv(
+  "~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv"
 )
+
+# create outer-only 610 m setback boundary
+radius <- 610
+
+wellpad_sf <- st_as_sf(
+  wellpad_cords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+setback_boundary <- wellpad_sf %>%
+  st_buffer(dist = radius) %>%
+  st_union() %>%
+  st_boundary()
+
+setback_boundary_df <- setback_boundary %>%
+  st_as_sf() %>%
+  st_cast("LINESTRING") %>%
+  st_coordinates() %>%
+  as.data.frame()
+
+# fixed legend
+risk_min <- 1.5e-4
+risk_max <- 5.5e-4
+
+risk_breaks <- c(1.5e-4, 2.5e-4, 3.5e-4, 4.5e-4, 5.5e-4)
 
 # regulatory contour limits
 contour_levels <- c(1e-6, 1e-4)
@@ -1184,18 +2141,14 @@ plot_cancer_background <- ggplot(
 ) +
   geom_raster() +
 
-  scale_fill_viridis_c(
-    name = "Cancer Risk",
-    trans = "log10",
-    limits = c(risk_min, risk_max),
-    breaks = risk_breaks,
-    oob = scales::squish
-  ) +
-
-  coord_cartesian(
-    xlim = c(x_min, x_max),
-    ylim = c(y_min, y_max)
-  ) +
+scale_fill_viridis_c(
+  name = "Cancer Risk",
+  trans = "log10",
+  limits = c(risk_min, risk_max),
+  breaks = risk_breaks,
+  labels = scales::label_scientific(digits = 2),
+  oob = scales::squish
+) +
 
   geom_contour(
     aes(z = Risk),
@@ -1204,13 +2157,19 @@ plot_cancer_background <- ggplot(
     linewidth = 0.7
   ) +
 
-  # 610 m setback circles
+  # outer-only 610 m setback boundary
   geom_path(
-    data = circle_df,
-    aes(x = x, y = y, group = id),
+    data = setback_boundary_df,
+    aes(x = X, y = Y, group = L1),
     color = "black",
     linewidth = 0.8,
     inherit.aes = FALSE
+  ) +
+
+  coord_equal(
+    xlim = c(x_min, x_max),
+    ylim = c(y_min, y_max),
+    expand = FALSE
   ) +
 
   labs(
@@ -1229,10 +2188,1245 @@ ggsave(
   filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_background.png",
   plot = plot_cancer_background,
   width = 6,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+
+#panel together total cancer and background cancer graphs
+```{r}
+library(patchwork)
+
+plot_cancer_tot_panel <- plot_cancer_tot +
+  labs(title = NULL) +
+  theme(
+    legend.position = "right",
+    plot.margin = margin(2, 2, 2, 2)
+  )
+
+plot_cancer_background_panel <- plot_cancer_background +
+  labs(title = NULL) +
+  theme(
+    legend.position = "right",
+    plot.margin = margin(2, 2, 2, 2)
+  )
+
+combined_cancer_panel <- plot_cancer_tot_panel /
+  plot_cancer_background_panel +
+  plot_layout(
+    ncol = 1,
+    guides = "collect"
+  ) +
+  plot_annotation(
+    tag_levels = "A"
+  ) &
+  theme(
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    plot.tag = element_text(size = 14, face = "bold")
+  )
+
+combined_cancer_panel
+
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_total_background_panel.png",
+  plot = combined_cancer_panel,
+  width = 7.5,
+  height = 6.5,
+  dpi = 300
+)
+```
+
+
+
+### getting range of cancer risk per chemical (and total) at 2,000 ft ###
+
+
+
+#filter for grid cells that overlap with 610 m
+```{r}
+radius <- 610
+grid_res <- 50
+half_res <- grid_res / 2
+
+wellpad_cords <- read.csv(
+  "~/CO_CRA/CO_CRA_aggregate/data/broomfield/wellpad_cords.csv"
+)
+
+grid_cells <- data.frame(
+  cell_id = seq_along(as.vector(x)),
+  x = as.vector(x),
+  y = as.vector(y)
+) %>%
+  rowwise() %>%
+  mutate(
+    geometry = list(
+      st_polygon(list(matrix(
+        c(
+          x - half_res, y - half_res,
+          x + half_res, y - half_res,
+          x + half_res, y + half_res,
+          x - half_res, y + half_res,
+          x - half_res, y - half_res
+        ),
+        ncol = 2,
+        byrow = TRUE
+      )))
+    )
+  ) %>%
+  ungroup() %>%
+  st_as_sf(crs = NA)
+
+wellpad_sf <- st_as_sf(
+  wellpad_cords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+circle_lines <- wellpad_sf %>%
+  st_buffer(dist = radius) %>%
+  st_boundary()
+
+grid_cells$at_610m <- lengths(st_intersects(grid_cells, circle_lines)) > 0
+
+sum(grid_cells$at_610m)
+```
+
+
+#calculate cancer risk summaries w/ and w/o background
+```{r}
+# function to summarize cancer risks at 610 m
+calc_cancer_summary_at_610m <- function(mat, at_610m, chemical_name, scenario_name) {
+
+  vals <- as.vector(mat)
+  vals <- vals[at_610m]
+  vals <- vals[!is.na(vals)]
+
+  data.frame(
+    scenario = scenario_name,
+    chemical = chemical_name,
+    n_grids = length(vals),
+    min_risk = min(vals),
+    median_risk = median(vals),
+    mean_risk = mean(vals),
+    max_risk = max(vals)
+  )
+}
+
+# wrapper for individual chemicals + total
+summarize_cancer_at_610m <- function(risk_list, total_risk, at_610m, scenario_name) {
+
+  individual_summary <- do.call(
+    rbind,
+    lapply(names(risk_list), function(chem) {
+
+      calc_cancer_summary_at_610m(
+        mat = risk_list[[chem]],
+        at_610m = at_610m,
+        chemical_name = chem,
+        scenario_name = scenario_name
+      )
+    })
+  )
+
+  total_summary <- calc_cancer_summary_at_610m(
+    mat = total_risk,
+    at_610m = at_610m,
+    chemical_name = "Total cancer risk",
+    scenario_name = scenario_name
+  )
+
+  rbind(individual_summary, total_summary)
+}
+
+# cancer risks WITHOUT background at 610 m
+cancer_610m_nobkg_summary <- summarize_cancer_at_610m(
+  risk_list = CancerRisk_list_nobkg,
+  total_risk = CancerRisk_total_nobkg,
+  at_610m = grid_cells$at_610m,
+  scenario_name = "Without background"
+)
+
+# cancer risks WITH background at 610 m
+cancer_610m_wbkg_summary <- summarize_cancer_at_610m(
+  risk_list = CancerRisk_list,
+  total_risk = CancerRisk_total,
+  at_610m = grid_cells$at_610m,
+  scenario_name = "With background"
+)
+
+# combine
+cancer_610m_summary <- bind_rows(
+  cancer_610m_nobkg_summary,
+  cancer_610m_wbkg_summary
+)
+
+cancer_610m_summary
+
+write.csv(
+  cancer_610m_summary,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_at_2000ft_nobkg_wbkg.csv",
+  row.names = FALSE
+)
+```
+
+
+
+
+#figure of average individual chemical contributes to cancer risks at 2000 ft, with the x axis being the different scenarios: 1) without background, 2) background only, 3) total
+```{r}
+# chemical labels and colors
+chem_labels <- c(
+  "benzene" = "Benzene",
+  "ethylbenzene" = "Ethylbenzene",
+  "c2cl4" = "PCE",
+  "c2hcl3" = "TCE"
+)
+
+chem_colors <- c(
+  "Benzene"      = "#D9E57A",
+  "Ethylbenzene" = "#C7E9B4",
+  "PCE"          = "#41B6C4",
+  "TCE"          = "#225EA8"
+)
+
+# -----------------------------
+# 1. Prepare no-background and with-background data
+# -----------------------------
+
+risk_610m_plot_df <- cancer_610m_summary %>%
+  filter(chemical != "Total cancer risk") %>%
+  filter(scenario %in% c("Without background", "With background")) %>%
+  mutate(
+    chemical = recode(chemical, !!!chem_labels),
+scenario = factor(
+  scenario,
+  levels = c("Without background", "Background only", "With background"),
+  labels = c("UOG Only", "Background Only", "Total")
+)
+  ) %>%
+  select(
+    scenario,
+    chemical,
+    mean_risk
+  )
+
+# -----------------------------
+# 2. Prepare background-only data
+# -----------------------------
+
+background_plot_df <- cancer_summary_background_ind %>%
+  mutate(
+    scenario = "Background only",
+    chemical = recode(chemical, !!!chem_labels),
+    mean_risk = mean
+  ) %>%
+  select(
+    scenario,
+    chemical,
+    mean_risk
+  ) %>%
+  mutate(
+scenario = factor(
+  scenario,
+  levels = c("Without background", "Background only", "With background"),
+  labels = c("UOG Only", "Background Only", "Total")
+)
+  )
+
+# -----------------------------
+# 3. Combine
+# -----------------------------
+
+risk_stacked_plot_df <- bind_rows(
+  risk_610m_plot_df,
+  background_plot_df
+) %>%
+  filter(chemical %in% names(chem_colors)) %>%
+  mutate(
+    chemical = factor(
+      chemical,
+      levels = c("Benzene", "Ethylbenzene", "PCE", "TCE")
+    )
+  )
+
+# check values
+risk_stacked_plot_df
+
+# -----------------------------
+# 4. Plot
+# -----------------------------
+
+cancer_risk_stacked_bar <- ggplot(
+  risk_stacked_plot_df,
+  aes(x = scenario, y = mean_risk, fill = chemical)
+) +
+  geom_col(width = 0.7, color = "black", linewidth = 0.2) +
+
+  geom_hline(
+    yintercept = c(1e-6, 1e-4),
+    linetype = "dashed",
+    color = "red",
+    linewidth = 0.8
+  ) +
+
+scale_fill_manual(
+  name = "Chemical",
+  values = chem_colors,
+  labels = c(
+    "Benzene" = "Benzene (B)",
+    "Ethylbenzene" = "Ethylbenzene (E)",
+    "PCE" = "PCE (P)",
+    "TCE" = "TCE (T)"
+  )
+) +
+
+  scale_y_continuous(
+    limits = c(0, 2.6e-4),
+    breaks = c(1e-6, 5e-5, 1e-4, 1.5e-4, 2e-4, 2.5e-4),
+    labels = c("1.0e-06", "5.0e-05", "1.0e-04", "1.5e-04", "2.0e-04", "2.5e-04"),
+    expand = c(0, 0)
+  ) +
+
+  labs(
+    x = NULL,
+    y = "Average Cancer Risk at 2,000 ft (n = 553 grids)"
+  ) +
+
+  theme_minimal() +
+theme(
+  legend.position = "right",
+  axis.text.x = element_text(
+    angle = 0,
+    hjust = 0.5,
+    size = 11
+  )
+)
+
+cancer_risk_stacked_bar
+
+ggsave(
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_mean_risk_stacked_bar.png",
+  plot = cancer_risk_stacked_bar,
+  width = 7,
   height = 5,
   dpi = 300
 )
 ```
+
+
+
+
+
+### cancer risk summary table for individual risks and cumulative risks at all distances, for UOGD, background, total ###
+
+
+#load and check spatial analysis from the chronic workflow, and calculate the summaries
+```{r}
+# ------------------------------------------------------------
+# 1. Define output files
+# ------------------------------------------------------------
+
+cancer_distance_output_csv <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_500_to_5000ft_all_scenarios.csv"
+
+cancer_distance_output_xlsx <-
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_summary_500_to_5000ft_all_scenarios.xlsx"
+
+
+# ------------------------------------------------------------
+# 2. Confirm that the required spatial objects exist
+#
+# These objects were created in the chronic HI distance
+# workflow and are reused here without modification.
+# ------------------------------------------------------------
+
+required_spatial_objects <- c(
+  "distance_lookup",
+  "chronic_distance_masks",
+  "chronic_keep_mask",
+  "chronic_grid_nrow",
+  "chronic_grid_ncol",
+  "distance_grid_counts"
+)
+
+missing_spatial_objects <- required_spatial_objects[
+  !vapply(
+    required_spatial_objects,
+    exists,
+    logical(1),
+    inherits = TRUE
+  )
+]
+
+if (length(missing_spatial_objects) > 0) {
+
+  stop(
+    paste0(
+      "Run Steps 1–9 of the chronic distance workflow first. ",
+      "The following required objects are missing: ",
+      paste(missing_spatial_objects, collapse = ", ")
+    )
+  )
+}
+
+
+# ------------------------------------------------------------
+# 3. Create separate copies of the with-background cancer risks
+#
+# These copies prevent this workflow from modifying the
+# existing CancerRisk_list and CancerRisk_total objects.
+# ------------------------------------------------------------
+
+cancer_wbkg_list <- lapply(
+  CancerRisk_list,
+  function(mat) {
+
+    copied_mat <- mat
+    storage.mode(copied_mat) <- "double"
+
+    copied_mat
+  }
+)
+
+cancer_wbkg_total <- CancerRisk_total
+storage.mode(cancer_wbkg_total) <- "double"
+
+
+# ------------------------------------------------------------
+# 4. Load the previously saved without-background cancer risks
+#
+# These files are already created by the existing no-background
+# cancer analysis.
+# ------------------------------------------------------------
+
+cancer_nobkg_list <- readRDS(
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/CancerRisk_list_nobkg.rds"
+)
+
+cancer_nobkg_total <- readRDS(
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/CancerRisk_total_nobkg.rds"
+)
+
+# Ensure numeric matrix storage
+cancer_nobkg_list <- lapply(
+  cancer_nobkg_list,
+  function(mat) {
+
+    storage.mode(mat) <- "double"
+
+    mat
+  }
+)
+
+storage.mode(cancer_nobkg_total) <- "double"
+
+
+# ------------------------------------------------------------
+# 5. Check that the chemical names match between scenarios
+# ------------------------------------------------------------
+
+cancer_chems_wbkg <- names(cancer_wbkg_list)
+cancer_chems_nobkg <- names(cancer_nobkg_list)
+
+# These should both return character(0)
+setdiff(
+  cancer_chems_wbkg,
+  cancer_chems_nobkg
+)
+
+setdiff(
+  cancer_chems_nobkg,
+  cancer_chems_wbkg
+)
+
+cancer_common_chems <- intersect(
+  cancer_chems_wbkg,
+  cancer_chems_nobkg
+)
+
+if (length(cancer_common_chems) == 0) {
+
+  stop(
+    paste0(
+      "No matching chemicals were found between the ",
+      "with-background and without-background cancer-risk lists."
+    )
+  )
+}
+
+
+# ------------------------------------------------------------
+# 6. Check matrix dimensions
+# ------------------------------------------------------------
+
+expected_cancer_dimensions <- c(
+  chronic_grid_nrow,
+  chronic_grid_ncol
+)
+
+for (chem in cancer_common_chems) {
+
+  if (
+    !identical(
+      dim(cancer_wbkg_list[[chem]]),
+      expected_cancer_dimensions
+    )
+  ) {
+
+    stop(
+      paste0(
+        "Dimension mismatch for with-background cancer risk: ",
+        chem
+      )
+    )
+  }
+
+  if (
+    !identical(
+      dim(cancer_nobkg_list[[chem]]),
+      expected_cancer_dimensions
+    )
+  ) {
+
+    stop(
+      paste0(
+        "Dimension mismatch for without-background cancer risk: ",
+        chem
+      )
+    )
+  }
+
+  if (
+    !identical(
+      dim(cancer_wbkg_list[[chem]]),
+      dim(cancer_nobkg_list[[chem]])
+    )
+  ) {
+
+    stop(
+      paste0(
+        "The with-background and without-background matrices ",
+        "do not match for chemical: ",
+        chem
+      )
+    )
+  }
+}
+
+stopifnot(
+  identical(
+    dim(cancer_wbkg_total),
+    expected_cancer_dimensions
+  )
+)
+
+stopifnot(
+  identical(
+    dim(cancer_nobkg_total),
+    expected_cancer_dimensions
+  )
+)
+
+stopifnot(
+  identical(
+    dim(cancer_wbkg_total),
+    dim(cancer_nobkg_total)
+  )
+)
+
+
+# ------------------------------------------------------------
+# 7. Calculate background-only individual cancer risks
+#
+# Background only =
+#   cancer risk with background
+#   minus cancer risk without background
+# ------------------------------------------------------------
+
+cancer_background_list <- setNames(
+  vector(
+    mode = "list",
+    length = length(cancer_common_chems)
+  ),
+  cancer_common_chems
+)
+
+for (chem in cancer_common_chems) {
+
+  cancer_background_list[[chem]] <-
+    cancer_wbkg_list[[chem]] -
+    cancer_nobkg_list[[chem]]
+}
+
+
+# ------------------------------------------------------------
+# 8. Calculate total cancer risk for each scenario
+#
+# The individual risk matrices are summed cell by cell.
+#
+# This provides an independent check against the existing
+# total-risk matrices.
+# ------------------------------------------------------------
+
+cancer_wbkg_total_from_individual <- Reduce(
+  `+`,
+  cancer_wbkg_list[cancer_common_chems]
+)
+
+cancer_nobkg_total_from_individual <- Reduce(
+  `+`,
+  cancer_nobkg_list[cancer_common_chems]
+)
+
+cancer_background_total <- Reduce(
+  `+`,
+  cancer_background_list[cancer_common_chems]
+)
+
+
+# ------------------------------------------------------------
+# 9. Check existing totals against sums of individual risks
+#
+# These should return TRUE or have extremely small numerical
+# differences caused only by floating-point precision.
+# ------------------------------------------------------------
+
+isTRUE(
+  all.equal(
+    cancer_wbkg_total,
+    cancer_wbkg_total_from_individual,
+    check.attributes = FALSE
+  )
+)
+
+isTRUE(
+  all.equal(
+    cancer_nobkg_total,
+    cancer_nobkg_total_from_individual,
+    check.attributes = FALSE
+  )
+)
+
+# Check the maximum absolute difference
+max(
+  abs(
+    cancer_wbkg_total -
+    cancer_wbkg_total_from_individual
+  ),
+  na.rm = TRUE
+)
+
+max(
+  abs(
+    cancer_nobkg_total -
+    cancer_nobkg_total_from_individual
+  ),
+  na.rm = TRUE
+)
+
+
+# ------------------------------------------------------------
+# 10. Use the summed individual risks as the scenario totals
+#
+# This guarantees that "Total cancer risk" is explicitly the
+# sum of all individual cancer risks included in the table.
+# ------------------------------------------------------------
+
+cancer_wbkg_total_summary_mat <-
+  cancer_wbkg_total_from_individual
+
+cancer_nobkg_total_summary_mat <-
+  cancer_nobkg_total_from_individual
+
+cancer_background_total_summary_mat <-
+  cancer_background_total
+
+
+# ------------------------------------------------------------
+# 11. Apply the <25 m exclusion mask to copies only
+# ------------------------------------------------------------
+
+for (chem in cancer_common_chems) {
+
+  cancer_wbkg_list[[chem]][
+    !chronic_keep_mask
+  ] <- NA_real_
+
+  cancer_nobkg_list[[chem]][
+    !chronic_keep_mask
+  ] <- NA_real_
+
+  cancer_background_list[[chem]][
+    !chronic_keep_mask
+  ] <- NA_real_
+}
+
+cancer_wbkg_total_summary_mat[
+  !chronic_keep_mask
+] <- NA_real_
+
+cancer_nobkg_total_summary_mat[
+  !chronic_keep_mask
+] <- NA_real_
+
+cancer_background_total_summary_mat[
+  !chronic_keep_mask
+] <- NA_real_
+
+
+# ------------------------------------------------------------
+# 14. Add total cancer risk to each scenario list
+#
+# Individual chemicals and total risk can now be processed
+# through the same summary function.
+# ------------------------------------------------------------
+
+cancer_wbkg_summary_list <- cancer_wbkg_list[
+  cancer_common_chems
+]
+
+cancer_wbkg_summary_list[[
+  "Total cancer risk"
+]] <- cancer_wbkg_total_summary_mat
+
+
+cancer_nobkg_summary_list <- cancer_nobkg_list[
+  cancer_common_chems
+]
+
+cancer_nobkg_summary_list[[
+  "Total cancer risk"
+]] <- cancer_nobkg_total_summary_mat
+
+
+cancer_background_summary_list <-
+  cancer_background_list[
+    cancer_common_chems
+  ]
+
+cancer_background_summary_list[[
+  "Total cancer risk"
+]] <- cancer_background_total_summary_mat
+
+
+# ------------------------------------------------------------
+# 15. Store the three scenarios in one nested list
+# ------------------------------------------------------------
+
+cancer_scenario_lists <- list(
+  "Without background" = cancer_nobkg_summary_list,
+  "Background only" = cancer_background_summary_list,
+  "Total" = cancer_wbkg_summary_list
+)
+
+
+# ------------------------------------------------------------
+# 16. Function to calculate cancer-risk summary statistics
+#
+# n is the number of finite grid-cell values included for that
+# chemical/total, scenario, and distance.
+# ------------------------------------------------------------
+
+calculate_cancer_distance_summary <- function(
+  mat,
+  distance_mask,
+  risk_name,
+  scenario_name,
+  distance_ft,
+  distance_m
+) {
+
+  vals <- as.vector(mat)
+
+  if (length(vals) != length(distance_mask)) {
+
+    stop(
+      paste0(
+        "The cancer-risk matrix and spatial distance mask ",
+        "have different lengths for: ",
+        risk_name
+      )
+    )
+  }
+
+  vals <- vals[distance_mask]
+  vals <- vals[is.finite(vals)]
+
+  n_values <- length(vals)
+
+  if (n_values == 0) {
+
+    return(
+      data.frame(
+        scenario = scenario_name,
+        risk_type = risk_name,
+        distance_ft = distance_ft,
+        distance_m = distance_m,
+        n = 0,
+        min = NA_real_,
+        median = NA_real_,
+        mean = NA_real_,
+        max = NA_real_,
+        sd = NA_real_,
+        se = NA_real_
+      )
+    )
+  }
+
+  value_sd <- if (n_values > 1) {
+    sd(vals)
+  } else {
+    NA_real_
+  }
+
+  value_se <- if (n_values > 1) {
+    value_sd / sqrt(n_values)
+  } else {
+    NA_real_
+  }
+
+  data.frame(
+    scenario = scenario_name,
+    risk_type = risk_name,
+    distance_ft = distance_ft,
+    distance_m = distance_m,
+    n = n_values,
+    min = min(vals),
+    median = median(vals),
+    mean = mean(vals),
+    max = max(vals),
+    sd = value_sd,
+    se = value_se
+  )
+}
+
+
+# ------------------------------------------------------------
+# 17. Calculate summaries for every:
+#
+# scenario
+# × individual chemical or total
+# × distance
+# ------------------------------------------------------------
+
+cancer_distance_summary_list <- list()
+
+cancer_summary_counter <- 1
+
+for (
+  scenario_name in names(cancer_scenario_lists)
+) {
+
+  current_scenario_list <-
+    cancer_scenario_lists[[scenario_name]]
+
+  for (
+    risk_name in names(current_scenario_list)
+  ) {
+
+    message(
+      "Processing: ",
+      scenario_name,
+      " | ",
+      risk_name
+    )
+
+    current_risk_mat <-
+      current_scenario_list[[risk_name]]
+
+    for (i in seq_len(nrow(distance_lookup))) {
+
+      current_distance_ft <-
+        distance_lookup$distance_ft[i]
+
+      current_distance_m <-
+        distance_lookup$distance_m[i]
+
+      current_distance_mask <-
+        chronic_distance_masks[[
+          as.character(current_distance_ft)
+        ]]
+
+      cancer_distance_summary_list[[
+        cancer_summary_counter
+      ]] <- calculate_cancer_distance_summary(
+        mat = current_risk_mat,
+        distance_mask = current_distance_mask,
+        risk_name = risk_name,
+        scenario_name = scenario_name,
+        distance_ft = current_distance_ft,
+        distance_m = current_distance_m
+      )
+
+      cancer_summary_counter <-
+        cancer_summary_counter + 1
+    }
+  }
+}
+
+
+# ------------------------------------------------------------
+# 18. Combine all results
+# ------------------------------------------------------------
+
+cancer_distance_summary <- bind_rows(
+  cancer_distance_summary_list
+) %>%
+  mutate(
+    scenario = factor(
+      scenario,
+      levels = c(
+        "Without background",
+        "Background only",
+        "Total"
+      )
+    )
+  ) %>%
+  arrange(
+    risk_type,
+    distance_ft,
+    scenario
+  )
+
+cancer_distance_summary
+```
+
+
+
+
+#checks and saving
+```{r}
+# ------------------------------------------------------------
+# 19. Validate the expected number of rows
+#
+# Expected:
+#   number of individual chemicals plus total cancer risk
+#   x 10 distances
+#   x 3 scenarios
+# ------------------------------------------------------------
+
+number_of_risk_types <-
+  length(cancer_common_chems) + 1
+
+expected_cancer_summary_rows <-
+  number_of_risk_types *
+  nrow(distance_lookup) *
+  3
+
+actual_cancer_summary_rows <-
+  nrow(cancer_distance_summary)
+
+data.frame(
+  expected_rows = expected_cancer_summary_rows,
+  actual_rows = actual_cancer_summary_rows,
+  rows_match =
+    expected_cancer_summary_rows ==
+    actual_cancer_summary_rows
+)
+
+stopifnot(
+  expected_cancer_summary_rows ==
+  actual_cancer_summary_rows
+)
+
+
+# ------------------------------------------------------------
+# 20. Additional checks
+# ------------------------------------------------------------
+
+# Number of rows per risk type
+cancer_distance_summary %>%
+  count(risk_type)
+
+# Number of rows per scenario
+cancer_distance_summary %>%
+  count(scenario)
+
+# Number of rows per distance
+cancer_distance_summary %>%
+  count(distance_ft)
+
+# Check n against spatial grid counts
+cancer_distance_summary %>%
+  distinct(
+    risk_type,
+    scenario,
+    distance_ft,
+    n
+  ) %>%
+  left_join(
+    distance_grid_counts,
+    by = "distance_ft"
+  )
+
+
+# ------------------------------------------------------------
+# 21. Optional chemical-name labels
+#
+# Add any other chemicals with cancer risk values as needed.
+# Unlisted chemical names remain unchanged.
+# ------------------------------------------------------------
+
+cancer_risk_labels <- c(
+  "benzene" = "Benzene",
+  "ethylbenzene" = "Ethylbenzene",
+  "c2cl4" = "PCE",
+  "c2hcl3" = "TCE",
+  "Total cancer risk" = "Total cancer risk"
+)
+
+cancer_distance_summary <- cancer_distance_summary %>%
+  mutate(
+    risk_type = recode(
+      risk_type,
+      !!!cancer_risk_labels
+    )
+  ) %>%
+  arrange(
+    risk_type,
+    distance_ft,
+    scenario
+  )
+
+
+# ------------------------------------------------------------
+# 22. Save combined long-format CSV
+# ------------------------------------------------------------
+
+write.csv(
+  cancer_distance_summary,
+  file = cancer_distance_output_csv,
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 23. Create wide reporting version
+#
+# The columns are grouped by scenario:
+#
+#   all Without-background statistics
+#   all Background-only statistics
+#   all Total statistics
+# ------------------------------------------------------------
+
+cancer_distance_summary_wide <-
+  cancer_distance_summary %>%
+  mutate(
+    scenario = as.character(scenario),
+    scenario = recode(
+      scenario,
+      "Without background" =
+        "without_background",
+      "Background only" =
+        "background_only",
+      "Total" =
+        "total"
+    )
+  ) %>%
+  pivot_wider(
+    id_cols = c(
+      risk_type,
+      distance_ft,
+      distance_m
+    ),
+    names_from = scenario,
+    values_from = c(
+      n,
+      min,
+      median,
+      mean,
+      max,
+      sd,
+      se
+    ),
+    names_glue = "{scenario}_{.value}"
+  ) %>%
+  select(
+    risk_type,
+    distance_ft,
+    distance_m,
+
+    # Without background
+    without_background_n,
+    without_background_min,
+    without_background_median,
+    without_background_mean,
+    without_background_max,
+    without_background_sd,
+    without_background_se,
+
+    # Background only
+    background_only_n,
+    background_only_min,
+    background_only_median,
+    background_only_mean,
+    background_only_max,
+    background_only_sd,
+    background_only_se,
+
+    # Total / with background
+    total_n,
+    total_min,
+    total_median,
+    total_mean,
+    total_max,
+    total_sd,
+    total_se
+  ) %>%
+  arrange(
+    risk_type,
+    distance_ft
+  )
+
+cancer_distance_summary_wide
+
+
+# ------------------------------------------------------------
+# 24. Save Excel workbook
+# ------------------------------------------------------------
+
+cancer_distance_wb <- createWorkbook()
+
+
+# Long-format table
+addWorksheet(
+  cancer_distance_wb,
+  "Long summary"
+)
+
+writeData(
+  cancer_distance_wb,
+  sheet = "Long summary",
+  x = cancer_distance_summary
+)
+
+
+# Wide-format table
+addWorksheet(
+  cancer_distance_wb,
+  "Wide summary"
+)
+
+writeData(
+  cancer_distance_wb,
+  sheet = "Wide summary",
+  x = cancer_distance_summary_wide
+)
+
+
+# Spatial grid counts
+addWorksheet(
+  cancer_distance_wb,
+  "Distance grid counts"
+)
+
+writeData(
+  cancer_distance_wb,
+  sheet = "Distance grid counts",
+  x = distance_grid_counts
+)
+
+
+# Background-only minimum-value check
+addWorksheet(
+  cancer_distance_wb,
+  "Background value check"
+)
+
+writeData(
+  cancer_distance_wb,
+  sheet = "Background value check",
+  x = background_min_by_chemical
+)
+
+
+# ------------------------------------------------------------
+# 25. Format Excel workbook
+# ------------------------------------------------------------
+
+freezePane(
+  cancer_distance_wb,
+  sheet = "Long summary",
+  firstRow = TRUE
+)
+
+freezePane(
+  cancer_distance_wb,
+  sheet = "Wide summary",
+  firstRow = TRUE
+)
+
+freezePane(
+  cancer_distance_wb,
+  sheet = "Distance grid counts",
+  firstRow = TRUE
+)
+
+freezePane(
+  cancer_distance_wb,
+  sheet = "Background value check",
+  firstRow = TRUE
+)
+
+setColWidths(
+  cancer_distance_wb,
+  sheet = "Long summary",
+  cols = 1:ncol(cancer_distance_summary),
+  widths = "auto"
+)
+
+setColWidths(
+  cancer_distance_wb,
+  sheet = "Wide summary",
+  cols = 1:ncol(cancer_distance_summary_wide),
+  widths = "auto"
+)
+
+setColWidths(
+  cancer_distance_wb,
+  sheet = "Distance grid counts",
+  cols = 1:ncol(distance_grid_counts),
+  widths = "auto"
+)
+
+setColWidths(
+  cancer_distance_wb,
+  sheet = "Background value check",
+  cols = 1:ncol(background_min_by_chemical),
+  widths = "auto"
+)
+
+
+# ------------------------------------------------------------
+# 26. Save workbook
+# ------------------------------------------------------------
+
+saveWorkbook(
+  cancer_distance_wb,
+  file = cancer_distance_output_xlsx,
+  overwrite = TRUE
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

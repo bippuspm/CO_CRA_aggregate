@@ -17,6 +17,8 @@ library("stringr")
 library("lubridate")
 library("ggh4x")
 library("patchwork")
+library("cowplot")
+library("grid")
 detach(package:Rmisc)
 detach(package:plyr)
 ```
@@ -443,42 +445,9 @@ write.csv(hi_final, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/acute_HI_wbkg
 ```
 
 
-#plot HI by distance for an example trigger event
-```{r}
-#example for one trigger event
-plot_df <- hi_final %>%
-  filter(
-    `Source Wellpad` == "NWB",
-    `Sampling Site` == "UT2",
-    format(`Start Date Time`, "%Y-%m-%d %H:%M") == "2021-09-18 08:22"
-  )
-
-hi_distance_ex = ggplot(plot_df, aes(x = distance_ft, y = HI_total_time, color = Endpoint)) +
-  geom_line() +
-  geom_point() +
-  labs(
-    x = "Distance from Wellpad (ft)",
-    y = "HI (Time Matched Ozone)",
-    color = "Endpoint",
-    title = "Hazard Index vs Distance"
-  ) +
-  theme_minimal() +
-  geom_hline(yintercept = 1, linetype = "dashed")
-
-hi_distance_ex
-
-ggsave(
-  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/hi_distance_example_wbkg.png",
-  plot = hi_distance_ex,
-  width = 8,
-  height = 6,
-  dpi = 300
-)
-```
 
 
-
-#plot HI vs. distance for each endpoint, colored/multiple lines with different ozone scenarios averaged (and faceted) across O&G operation 
+#plot HI vs. distance for each endpoint, colored/multiple lines with different ozone scenarios averaged (and faceted) across O&G operation (not using in MS)
 ```{r}
 #reshape to long
 hi_long <- hi_final %>%
@@ -578,6 +547,7 @@ plots_by_endpoint[[11]]
 # get endpoint names
 endpoint_names <- unique(hi_summary$Endpoint)
 
+
 # loop and save
 for (i in seq_along(plots_by_endpoint)) {
   
@@ -601,6 +571,8 @@ for (i in seq_along(plots_by_endpoint)) {
 write.csv(hi_summary, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/HI_summary_wbkg.csv")
 
 hi_plots_by_endpoint <- plots_by_endpoint
+
+
 ```
 
 
@@ -714,29 +686,36 @@ summary(hi_check$diff)
 
 #stacked bar plots (ozone is for the p95 scenario)
 ```{r}
-#change chemical names
+# -----------------------------
+# Change chemical names
+# -----------------------------
+
 sort(unique(hq_plot_df$chemical))
 
 hq_plot_df <- hq_plot_df %>%
   mutate(
     chemical = recode(
       chemical,
-      "aliphatic_low" = "Aliphatic low",
+      "aliphatic_low"   = "Aliphatic low",
       "aromatic_medium" = "Aromatic medium",
-      "benzene" = "Benzene", 
-      "c2cl4" = "PCE", 
-      "c2hcl3" = "TCE",
-      "ethylbenzene" = "Ethylbenzene", 
-      "n_nonane" = "n_Nonane", 
-      "Ozone" = "Ozone (p95)", 
-      "ozone" = "Ozone (p95)",
-      "styrene" = "Styrene", 
-      "toluene" = "Toluene", 
-      "xylenes" = "Xylenes"
+      "benzene"         = "Benzene",
+      "c2cl4"           = "PCE",
+      "c2hcl3"          = "TCE",
+      "ethylbenzene"    = "Ethylbenzene",
+      "n_nonane"        = "n_Nonane",
+      "Ozone"           = "Ozone (p95)",
+      "ozone"           = "Ozone (p95)",
+      "styrene"         = "Styrene",
+      "toluene"         = "Toluene",
+      "xylenes"         = "Xylenes"
     )
   )
 
-#define chemical colors
+
+# -----------------------------
+# Define chemical colors
+# -----------------------------
+
 chemical_colors <- c(
   "Aliphatic low"   = "#FFFFD9",
   "Aromatic medium" = "#EDF8B1",
@@ -751,43 +730,416 @@ chemical_colors <- c(
   "Xylenes"         = "#081D58"
 )
 
-#plot
-plots_by_endpoint <- lapply(unique(hq_plot_df$Endpoint), function(ep) {
-  
-  df <- hq_plot_df %>%
-    filter(Endpoint == ep)
-  
-ggplot(df, aes(
-  x = factor(distance_ft),
-  y = HQ_mean,
-  fill = chemical
-)) +
 
-  geom_col(position = "stack", width = 0.8) +
+# -----------------------------
+# Define legend labels
+# -----------------------------
 
-  facet_wrap(~ Operation) +
+chemical_legend_labels <- c(
+  "Aliphatic low"   = "Aliphatic low (Al)",
+  "Aromatic medium" = "Aromatic medium (Am)",
+  "Benzene"         = "Benzene (B)",
+  "Ethylbenzene"    = "Ethylbenzene (E)",
+  "n_Nonane"        = "n_Nonane (N)",
+  "Ozone (p95)"     = "p95 Ozone (O)",
+  "PCE"             = "PCE (P)",
+  "Styrene"         = "Styrene (S)",
+  "TCE"             = "TCE (T)",
+  "Toluene"         = "Toluene (To)",
+  "Xylenes"         = "Xylenes (X)"
+)
 
-  geom_hline(yintercept = 1, linetype = "dashed") +
 
-  scale_fill_manual(
-    values = chemical_colors,
-    drop = FALSE
-  ) +
+# -----------------------------
+# Set consistent chemical order
+# -----------------------------
 
-  labs(
-    title = paste("Stacked HQ Contributions by Distance -", ep),
-    x = "Distance from Wellpad (ft)",
-    y = "Average Hazard Quotient",
-    fill = "Chemical"
-  ) +
+chemical_order <- names(chemical_colors)
 
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1)
+hq_plot_df <- hq_plot_df %>%
+  mutate(
+    chemical = factor(
+      chemical,
+      levels = chemical_order
+    )
   )
+
+
+# -----------------------------
+# Create one paneled plot per endpoint
+# -----------------------------
+
+endpoint_names <- unique(hq_plot_df$Endpoint)
+
+plots_by_endpoint <- lapply(endpoint_names, function(ep) {
+
+  endpoint_df <- hq_plot_df %>%
+    filter(Endpoint == ep) %>%
+    droplevels()
+
+  operation_names <- unique(endpoint_df$Operation)
+
+  # Number of operation panels and graph rows
+  n_operations <- length(operation_names)
+  n_rows <- ceiling(n_operations / 2)
+
+  # Number of chemicals shown in this endpoint's legend
+  n_legend_entries <- endpoint_df %>%
+    filter(!is.na(chemical)) %>%
+    distinct(chemical) %>%
+    nrow()
+
+  # Give the bottom row extra height when the legend is long
+  bottom_row_height <- if (n_legend_entries >= 9) {
+    1.55
+  } else if (n_legend_entries >= 7) {
+    1.30
+  } else {
+    1.10
+  }
+
+  # Relative heights for the graph rows
+  row_heights <- c(
+    rep(1, n_rows - 1),
+    bottom_row_height
+  )
+
+
+  # -----------------------------
+  # Calculate complete stacked HQ totals
+  # -----------------------------
+
+  endpoint_stack_totals <- endpoint_df %>%
+    group_by(
+      Operation,
+      distance_ft
+    ) %>%
+    summarise(
+      stacked_HQ = sum(
+        HQ_mean,
+        na.rm = TRUE
+      ),
+      .groups = "drop"
+    )
+
+  endpoint_y_max <- max(
+    endpoint_stack_totals$stacked_HQ,
+    na.rm = TRUE
+  )
+
+  # Add space above the tallest complete stack
+  endpoint_y_limit <- endpoint_y_max * 1.05
+
+  # Fallback if all values are missing or zero
+  if (
+    !is.finite(endpoint_y_limit) ||
+      endpoint_y_limit <= 0
+  ) {
+    endpoint_y_limit <- 1
+  }
+
+
+  # -----------------------------
+  # Create one plot per operation
+  # -----------------------------
+
+  operation_plots <- lapply(
+    seq_along(operation_names),
+    function(op_index) {
+
+      op <- operation_names[op_index]
+
+      operation_df <- endpoint_df %>%
+        filter(Operation == op) %>%
+        droplevels()
+
+      ggplot(
+        operation_df,
+        aes(
+          x = factor(distance_ft),
+          y = HQ_mean,
+          fill = chemical
+        )
+      ) +
+
+        geom_col(
+          position = "stack",
+          width = 0.8
+        ) +
+
+        geom_hline(
+          yintercept = 1,
+          linetype = "dashed",
+          linewidth = 0.6
+        ) +
+
+        scale_fill_manual(
+          name = "Chemical",
+          values = chemical_colors,
+          breaks = chemical_order,
+          labels = chemical_legend_labels,
+          drop = TRUE
+        ) +
+
+        # Do not place limits directly in the scale because
+        # that can remove portions of stacked bars
+        scale_y_continuous(
+          expand = expansion(
+            mult = c(0, 0.02)
+          )
+        ) +
+
+        # Apply displayed range after bars are stacked
+        coord_cartesian(
+          ylim = c(
+            0,
+            endpoint_y_limit
+          )
+        ) +
+
+        labs(
+          # Add A, B, C, etc. directly to each operation plot
+          tag = LETTERS[op_index],
+
+          # Wrap long operation titles onto multiple lines
+          title = stringr::str_wrap(
+            op,
+            width = 28
+          ),
+
+          # Shared axis titles are added to the full figure
+          x = NULL,
+          y = NULL
+        ) +
+
+        guides(
+          fill = guide_legend(
+            ncol = 1,
+            byrow = TRUE
+          )
+        ) +
+
+        theme_minimal(
+          base_size = 11
+        ) +
+
+        theme(
+          plot.title = element_text(
+            hjust = 0.5,
+            face = "bold",
+            size = 12,
+            lineheight = 0.95,
+            margin = margin(
+              b = 6
+            )
+          ),
+
+          # Panel label appearance and position
+          plot.tag = element_text(
+            face = "bold",
+            size = 11,
+            hjust = 0,
+            vjust = 1
+          ),
+
+          plot.tag.position = c(
+            0,
+            1
+          ),
+
+          axis.text.x = element_text(
+            angle = 45,
+            hjust = 1,
+            vjust = 1,
+            size = 9.5
+          ),
+
+          axis.text.y = element_text(
+            size = 10
+          ),
+
+          # Remove individual panel axis titles
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+
+          legend.title = element_text(
+            face = "bold",
+            size = 11
+          ),
+
+          legend.text = element_text(
+            size = 10
+          ),
+
+          legend.key.size = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.key.height = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.key.width = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.spacing.y = grid::unit(
+            0.03,
+            "cm"
+          ),
+
+          legend.margin = margin(
+            t = 0,
+            r = 0,
+            b = 0,
+            l = 0
+          ),
+
+          panel.grid.minor = element_blank(),
+
+          # Slightly more space for panel tag
+          plot.margin = margin(
+            t = 8,
+            r = 5,
+            b = 5,
+            l = 8
+          )
+        )
+    }
+  )
+
+  names(operation_plots) <- operation_names
+
+
+  # -----------------------------
+  # Add legend placeholder
+  # -----------------------------
+
+  plot_list_with_legend <- c(
+    operation_plots,
+    list(
+      patchwork::guide_area()
+    )
+  )
+
+
+  # -----------------------------
+  # Assemble two-column graph section
+  # -----------------------------
+
+  graph_section <- patchwork::wrap_plots(
+    plotlist = plot_list_with_legend,
+    ncol = 2,
+    guides = "collect",
+    heights = row_heights
+  ) +
+
+    patchwork::plot_annotation(
+      title = paste(
+        "Stacked HQ Contributions by Distance -",
+        ep
+      ),
+
+      theme = theme(
+        plot.title = element_text(
+          hjust = 0.5,
+          face = "bold",
+          size = 15,
+          margin = margin(
+            b = 8
+          )
+        )
+      )
+    ) &
+
+    theme(
+      legend.position = "right",
+      legend.justification = "center",
+      legend.box = "vertical"
+    )
+
+
+  # -----------------------------
+  # Create one shared x-axis title
+  # -----------------------------
+
+  shared_x_axis_title <- patchwork::wrap_elements(
+    full = grid::textGrob(
+      label = "Distance from Wellpad (ft)",
+      x = 0.5,
+      y = 0.65,
+      just = "center",
+      gp = grid::gpar(
+        fontsize = 11.5
+      )
+    ),
+    ignore_tag = TRUE
+  )
+
+
+  # -----------------------------
+  # Create one shared y-axis title
+  # -----------------------------
+
+  shared_y_axis_title <- patchwork::wrap_elements(
+    full = grid::textGrob(
+      label = "Average Hazard Quotient (HQ)",
+      x = 0.55,
+      y = 0.5,
+      just = "center",
+      rot = 90,
+      gp = grid::gpar(
+        fontsize = 11.5
+      )
+    ),
+    ignore_tag = TRUE
+  )
+
+
+  # -----------------------------
+  # Add shared y-axis title beside graph section
+  # -----------------------------
+
+  graph_with_y_title <- (
+    shared_y_axis_title |
+      graph_section
+  ) +
+
+    patchwork::plot_layout(
+      widths = c(
+        0.045,
+        1
+      )
+    )
+
+
+  # -----------------------------
+  # Add shared x-axis title beneath complete figure
+  # -----------------------------
+
+  endpoint_plot <- (
+    graph_with_y_title /
+      shared_x_axis_title
+  ) +
+
+    patchwork::plot_layout(
+      heights = c(
+        1,
+        0.035
+      )
+    )
+
+  endpoint_plot
 })
 
-#view plots
+
+# -----------------------------
+# View plots
+# -----------------------------
+
 plots_by_endpoint[[1]]
 plots_by_endpoint[[2]]
 plots_by_endpoint[[3]]
@@ -800,88 +1152,1789 @@ plots_by_endpoint[[9]]
 plots_by_endpoint[[10]]
 plots_by_endpoint[[11]]
 
-#save plots
-endpoint_names <- unique(hq_plot_df$Endpoint)
+
+# -----------------------------
+# Save plots
+# -----------------------------
 
 for (i in seq_along(plots_by_endpoint)) {
-  
+
   ep_name <- endpoint_names[i] %>%
-    stringr::str_replace_all("[^A-Za-z0-9]", "_")
-  
+    stringr::str_replace_all(
+      "[^A-Za-z0-9]",
+      "_"
+    )
+
   ggsave(
     filename = file.path(
       "~/CO_CRA/CO_CRA_aggregate/output/acute",
-      paste0("HQ_dist_operation_bar_wbkg_", ep_name, ".png")
+      paste0(
+        "HQ_dist_operation_bar_wbkg_",
+        ep_name,
+        ".png"
+      )
     ),
+
     plot = plots_by_endpoint[[i]],
-    width = 11,
-    height = 7,
-    dpi = 300
+
+    width = 7,
+    height = 10,
+    units = "in",
+    dpi = 400
   )
 }
 
-#save HQ summary data
-write.csv(hq_plot_df, file = "~/CO_CRA/CO_CRA_aggregate/output/acute/HQ_summary_wbkg.csv")
+
+# -----------------------------
+# Save HQ summary data
+# -----------------------------
+
+write.csv(
+  hq_plot_df,
+  file = paste0(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute/",
+    "HQ_summary_wbkg.csv"
+  ),
+  row.names = FALSE
+)
+
+
+# -----------------------------
+# Retain plot object under original name
+# -----------------------------
 
 hq_plots_by_endpoint <- plots_by_endpoint
 ```
 
 
 
-# for publication, panel together a figure for each endpoint of the HI exceedances per distance with ozone scenarios, and the chemical contributions as A and B
+
+#save HQ_summary_wbkg file that includes all ozone scenarios for supplemental in the MS
 ```{r}
-endpoint_names <- unique(hi_summary$Endpoint)
+# ------------------------------------------------------------
+# 1. Prepare the chemical HQ data
+#
+# These are the non-ozone chemical HQ values already calculated
+# in chemical_hq.
+# ------------------------------------------------------------
 
-#plot
+chemical_hq_allozone_raw <- chemical_hq %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint,
+    chemical,
+    HQ
+  ) %>%
+  filter(
+    !is.na(Operation),
+    !is.na(Endpoint),
+    !is.na(distance_ft),
+    !is.na(chemical),
+    !is.na(HQ)
+  )
 
-combined_plots <- lapply(seq_along(endpoint_names), function(i) {
 
-  pA <- hi_plots_by_endpoint[[i]] +
-    labs(title = NULL, tag = "A") +
-    theme(axis.title.x = element_blank())
+# ------------------------------------------------------------
+# 2. Summarize the chemical HQs
+#
+# Each chemical appears only once per operation, endpoint,
+# and distance.
+# ------------------------------------------------------------
 
-  pB <- hq_plots_by_endpoint[[i]] +
-    labs(title = NULL, tag = "B")
+chemical_hq_allozone_summary <- chemical_hq_allozone_raw %>%
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    n = sum(
+      !is.na(HQ)
+    ),
 
-  pA / pB +
-    plot_annotation(title = endpoint_names[i]) &
-    theme(
-      plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
-      plot.tag = element_text(face = "bold", size = 14)
+    HQ_mean = mean(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_median = median(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_sd = sd(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_se = if_else(
+      n > 0,
+      HQ_sd / sqrt(n),
+      NA_real_
+    ),
+
+    HQ_min = min(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_max = max(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 3. Create the event, operation, endpoint, and distance
+#    structure onto which ozone HQs will be joined
+# ------------------------------------------------------------
+
+ozone_structure_allozone <- chemical_hq %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint
+  ) %>%
+  filter(
+    !is.na(Operation),
+    !is.na(Endpoint),
+    !is.na(distance_ft)
+  ) %>%
+  distinct() %>%
+  mutate(
+    Date = as.Date(
+      `Start Date Time`
+    ),
+
+    Hour = lubridate::hour(
+      `Start Date Time`
     )
-})
+  )
 
-#view
-combined_plots[[1]]
-combined_plots[[2]]
-combined_plots[[3]]
-combined_plots[[4]]
-combined_plots[[5]]
-combined_plots[[6]]
-combined_plots[[7]]
-combined_plots[[8]]
-combined_plots[[9]]
-combined_plots[[10]]
-combined_plots[[11]]
 
-#save
-for (i in seq_along(combined_plots)) {
+# ------------------------------------------------------------
+# 4. Reshape the ozone HQ data
+#
+# The scenario names are placed directly into the chemical
+# column so they can be appended to the chemical HQ summary.
+# ------------------------------------------------------------
 
-  ep_name <- endpoint_names[i] %>%
-    stringr::str_replace_all("[^A-Za-z0-9]", "_")
+ozone_hq_allozone_long <- ozone_hq %>%
+  select(
+    Date,
+    Hour,
+    Endpoint,
+    HQ_time,
+    HQ_p50,
+    HQ_p95
+  ) %>%
+  mutate(
+    Hour = as.numeric(
+      Hour
+    )
+  ) %>%
+  pivot_longer(
+    cols = c(
+      HQ_time,
+      HQ_p50,
+      HQ_p95
+    ),
+
+    names_to = "chemical",
+    values_to = "HQ"
+  ) %>%
+  mutate(
+    chemical = recode(
+      chemical,
+      "HQ_time" = "Ozone (time-matched)",
+      "HQ_p50"  = "Ozone (p50)",
+      "HQ_p95"  = "Ozone (p95)"
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 5. Expand ozone HQs to each event, operation, endpoint,
+#    and distance
+# ------------------------------------------------------------
+
+ozone_hq_allozone_expanded <- ozone_structure_allozone %>%
+  left_join(
+    ozone_hq_allozone_long,
+
+    by = c(
+      "Date",
+      "Hour",
+      "Endpoint"
+    )
+  ) %>%
+  filter(
+    !is.na(HQ),
+    !is.na(chemical)
+  ) %>%
+  select(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    Operation,
+    Endpoint,
+    chemical,
+    HQ
+  )
+
+
+# ------------------------------------------------------------
+# 6. Summarize the three ozone HQ scenarios
+#
+# This produces one summary row for each ozone scenario by
+# operation, endpoint, and distance.
+# ------------------------------------------------------------
+
+ozone_hq_allozone_summary <- ozone_hq_allozone_expanded %>%
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    n = sum(
+      !is.na(HQ)
+    ),
+
+    HQ_mean = mean(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_median = median(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_sd = sd(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_se = if_else(
+      n > 0,
+      HQ_sd / sqrt(n),
+      NA_real_
+    ),
+
+    HQ_min = min(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    HQ_max = max(
+      HQ,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 7. Combine chemical and ozone summaries
+#
+# The ozone scenarios are appended as three additional
+# "chemical" categories.
+# ------------------------------------------------------------
+
+hq_summary_allozone <- bind_rows(
+  chemical_hq_allozone_summary,
+  ozone_hq_allozone_summary
+)
+
+
+# ------------------------------------------------------------
+# 8. Clean the non-ozone chemical names
+# ------------------------------------------------------------
+
+hq_summary_allozone <- hq_summary_allozone %>%
+  mutate(
+    chemical = recode(
+      chemical,
+      "aliphatic_low"   = "Aliphatic low",
+      "aromatic_medium" = "Aromatic medium",
+      "benzene"         = "Benzene",
+      "c2cl4"           = "PCE",
+      "c2hcl3"          = "TCE",
+      "ethylbenzene"    = "Ethylbenzene",
+      "n_nonane"        = "n_Nonane",
+      "n_decane"        = "n_Decane",
+      "styrene"         = "Styrene",
+      "toluene"         = "Toluene",
+      "xylenes"         = "Xylenes"
+    )
+  ) %>%
+  arrange(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical
+  )
+
+
+# ------------------------------------------------------------
+# 9. Check the final chemical categories
+# ------------------------------------------------------------
+
+sort(
+  unique(
+    hq_summary_allozone$chemical
+  )
+)
+
+
+# The ozone categories should include:
+#
+# "Ozone (time-matched)"
+# "Ozone (p50)"
+# "Ozone (p95)"
+
+
+# ------------------------------------------------------------
+# 10. Check that all three ozone scenarios are present for
+#     each operation, endpoint, and distance
+# ------------------------------------------------------------
+
+ozone_scenario_check <- hq_summary_allozone %>%
+  filter(
+    chemical %in% c(
+      "Ozone (time-matched)",
+      "Ozone (p50)",
+      "Ozone (p95)"
+    )
+  ) %>%
+  count(
+    Operation,
+    Endpoint,
+    distance_ft,
+    name = "n_ozone_scenarios"
+  )
+
+
+# Ideally, every value should equal 3
+table(
+  ozone_scenario_check$n_ozone_scenarios
+)
+
+
+# Display any combinations that do not have all three scenarios
+ozone_scenario_check %>%
+  filter(
+    n_ozone_scenarios != 3
+  )
+
+
+# ------------------------------------------------------------
+# 11. Confirm that the chemical rows were not repeated
+#
+# Each chemical/operation/endpoint/distance combination should
+# appear exactly once.
+# ------------------------------------------------------------
+
+duplicate_summary_check <- hq_summary_allozone %>%
+  count(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical,
+    name = "n_rows"
+  ) %>%
+  filter(
+    n_rows > 1
+  )
+
+
+nrow(
+  duplicate_summary_check
+)
+
+# Expected result: 0
+
+
+# ------------------------------------------------------------
+# 12. Optional check of the number of summary rows by chemical
+# ------------------------------------------------------------
+
+hq_summary_allozone %>%
+  count(
+    chemical,
+    name = "n_summary_rows"
+  ) %>%
+  arrange(
+    chemical
+  )
+
+
+# ------------------------------------------------------------
+# 13. Quality-control check:
+#     p95 chemical HQs + p95 ozone should reproduce the
+#     mean p95 HI for each operation, endpoint, and distance
+# ------------------------------------------------------------
+
+p95_hq_check <- hq_summary_allozone %>%
+  filter(
+    !chemical %in% c(
+      "Ozone (time-matched)",
+      "Ozone (p50)"
+    )
+  ) %>%
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft
+  ) %>%
+  summarise(
+    HI_from_p95_HQ_summary = sum(
+      HQ_mean,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  ) %>%
+  left_join(
+    hi_final %>%
+      group_by(
+        Operation,
+        Endpoint,
+        distance_ft
+      ) %>%
+      summarise(
+        HI_total_p95_mean = mean(
+          HI_total_p95,
+          na.rm = TRUE
+        ),
+
+        .groups = "drop"
+      ),
+
+    by = c(
+      "Operation",
+      "Endpoint",
+      "distance_ft"
+    )
+  ) %>%
+  mutate(
+    difference = HI_from_p95_HQ_summary -
+      HI_total_p95_mean
+  )
+
+
+summary(
+  p95_hq_check$difference
+)
+
+# The differences should be zero or extremely close to zero.
+
+
+# ------------------------------------------------------------
+# 14. Quality-control check for all three ozone scenarios
+#
+# The chemical component is the same for all scenarios.
+# Only the selected ozone row changes.
+# ------------------------------------------------------------
+
+chemical_mean_for_scenario_check <- hq_summary_allozone %>%
+  filter(
+    !chemical %in% c(
+      "Ozone (time-matched)",
+      "Ozone (p50)",
+      "Ozone (p95)"
+    )
+  ) %>%
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft
+  ) %>%
+  summarise(
+    HI_chemicals_from_summary = sum(
+      HQ_mean,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+ozone_mean_for_scenario_check <- hq_summary_allozone %>%
+  filter(
+    chemical %in% c(
+      "Ozone (time-matched)",
+      "Ozone (p50)",
+      "Ozone (p95)"
+    )
+  ) %>%
+  select(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical,
+    ozone_HQ_mean = HQ_mean
+  ) %>%
+  mutate(
+    HI_column = recode(
+      chemical,
+      "Ozone (time-matched)" = "HI_total_time",
+      "Ozone (p50)" = "HI_total_p50",
+      "Ozone (p95)" = "HI_total_p95"
+    )
+  )
+
+
+hi_mean_for_scenario_check <- hi_final %>%
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft
+  ) %>%
+  summarise(
+    HI_total_time = mean(
+      HI_total_time,
+      na.rm = TRUE
+    ),
+
+    HI_total_p50 = mean(
+      HI_total_p50,
+      na.rm = TRUE
+    ),
+
+    HI_total_p95 = mean(
+      HI_total_p95,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(
+      HI_total_time,
+      HI_total_p50,
+      HI_total_p95
+    ),
+
+    names_to = "HI_column",
+    values_to = "HI_actual_mean"
+  )
+
+
+allozone_hq_check <- ozone_mean_for_scenario_check %>%
+  left_join(
+    chemical_mean_for_scenario_check,
+
+    by = c(
+      "Operation",
+      "Endpoint",
+      "distance_ft"
+    )
+  ) %>%
+  mutate(
+    HI_from_HQ_summary =
+      HI_chemicals_from_summary + ozone_HQ_mean
+  ) %>%
+  left_join(
+    hi_mean_for_scenario_check,
+
+    by = c(
+      "Operation",
+      "Endpoint",
+      "distance_ft",
+      "HI_column"
+    )
+  ) %>%
+  mutate(
+    difference =
+      HI_from_HQ_summary - HI_actual_mean
+  )
+
+
+# Overall check
+summary(
+  allozone_hq_check$difference
+)
+
+
+# Check separately by ozone scenario
+allozone_hq_check %>%
+  group_by(
+    chemical
+  ) %>%
+  summarise(
+    maximum_absolute_difference = max(
+      abs(difference),
+      na.rm = TRUE
+    ),
+
+    mean_absolute_difference = mean(
+      abs(difference),
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 15. Save the separate all-ozone HQ summary
+#
+# This does not overwrite HQ_summary_wbkg.csv.
+# ------------------------------------------------------------
+
+write.csv(
+  hq_summary_allozone,
+
+  file = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "HQ_summary_wbkg_allozone.csv"
+  ),
+
+  row.names = FALSE
+)
+
+```
+
+
+
+
+#### make new line graphs for MS ####
+
+
+
+
+#making the same color and shapes per endpoint for all graphs
+```{r}
+endpoint_levels_all <- hi_final %>%
+  filter(!is.na(Endpoint)) %>%
+  distinct(Endpoint) %>%
+  pull(Endpoint) %>%
+  sort()
+
+endpoint_palette <- c(
+  "#0072B2", # blue
+  "#D55E00", # vermillion
+  "#009E73", # bluish green
+  "#E69F00", # orange
+  "#CC79A7", # reddish purple
+  "#56B4E9", # sky blue
+  "#F0E442", # yellow
+  "#999999", # gray
+  "#332288",
+  "#88CCEE",
+  "#44AA99",
+  "#117733",
+  "#DDCC77",
+  "#CC6677"
+)
+
+endpoint_shape_values <- c(
+  16, 15, 17, 18, 25, 22, 8, 24, 6, 3, 4, 7, 9, 10
+)
+
+endpoint_colors <- rep(endpoint_palette, length.out = length(endpoint_levels_all))
+names(endpoint_colors) <- endpoint_levels_all
+
+endpoint_shapes <- rep(endpoint_shape_values, length.out = length(endpoint_levels_all))
+names(endpoint_shapes) <- endpoint_levels_all
+```
+
+
+
+#individual plots per operation, line graphs colored by endpoint, avg HI vs. distance, ozone scenario
+
+#making 4 plots: 1) p95 with all endpoints, 2) p50 with all endpoints, 3) p95 with exceeding endpoints, 4) p50 with exceeding endpoints
+```{r}
+# ============================================================
+# Helper function for operation-specific line plots
+#
+# Creates four plot sets:
+# 1. p95 ozone, all endpoints
+# 2. p50 ozone, all endpoints
+# 3. p95 ozone, endpoints exceeding average HI > 1
+# 4. p50 ozone, endpoints exceeding average HI > 1
+
+# ============================================================
+
+make_operation_hi_plots <- function(
+  hi_col,
+  ozone_label,
+  exceed_only = FALSE,
+  output_prefix
+) {
+
+  hi_col_sym <- rlang::sym(hi_col)
+
+
+  # ----------------------------------------------------------
+  # 1. Summarize HI by operation, endpoint, and distance
+  # ----------------------------------------------------------
+
+  hi_summary <- hi_final %>%
+    filter(
+      !is.na(Operation),
+      !is.na(Endpoint),
+      !is.na(!!hi_col_sym)
+    ) %>%
+    group_by(
+      Operation,
+      Endpoint,
+      distance_ft
+    ) %>%
+    summarise(
+      HI_mean = mean(
+        !!hi_col_sym,
+        na.rm = TRUE
+      ),
+
+      HI_median = median(
+        !!hi_col_sym,
+        na.rm = TRUE
+      ),
+
+      HI_sd = sd(
+        !!hi_col_sym,
+        na.rm = TRUE
+      ),
+
+      n = sum(
+        !is.na(!!hi_col_sym)
+      ),
+
+      HI_se = HI_sd / sqrt(n),
+
+      HI_min = min(
+        !!hi_col_sym,
+        na.rm = TRUE
+      ),
+
+      HI_max = max(
+        !!hi_col_sym,
+        na.rm = TRUE
+      ),
+
+      .groups = "drop"
+    ) %>%
+
+    mutate(
+      HI_ymin = pmax(
+        HI_mean - HI_se,
+        0
+      ),
+
+      HI_ymax = HI_mean + HI_se,
+
+      Endpoint = factor(
+        Endpoint,
+        levels = endpoint_levels_all
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # 2. Calculate sample size for each operation
+  # ----------------------------------------------------------
+
+  operation_n <- hi_final %>%
+    filter(
+      !is.na(Operation),
+      !is.na(Endpoint),
+      !is.na(!!hi_col_sym)
+    ) %>%
+
+    distinct(
+      Operation,
+      `Start Date Time`,
+      `Source Wellpad`,
+      `Sampling Site`
+    ) %>%
+
+    count(
+      Operation,
+      name = "n_samples"
+    )
+
+
+  operation_n_lookup <- setNames(
+    operation_n$n_samples,
+    operation_n$Operation
+  )
+
+
+  # ----------------------------------------------------------
+  # 3. Optionally retain endpoints exceeding average HI > 1
+  #    within each operation
+  # ----------------------------------------------------------
+
+  if (exceed_only) {
+
+    operation_endpoint_exceeding <- hi_summary %>%
+      group_by(
+        Operation,
+        Endpoint
+      ) %>%
+
+      summarise(
+        HI_max_operation = max(
+          HI_mean,
+          na.rm = TRUE
+        ),
+        .groups = "drop"
+      ) %>%
+
+      filter(
+        HI_max_operation > 1
+      )
+
+
+    hi_summary <- hi_summary %>%
+      semi_join(
+        operation_endpoint_exceeding,
+        by = c(
+          "Operation",
+          "Endpoint"
+        )
+      )
+  }
+
+
+  # ----------------------------------------------------------
+  # 4. Save summarized data
+  # ----------------------------------------------------------
+
+  write.csv(
+    hi_summary,
+
+    file.path(
+      "~/CO_CRA/CO_CRA_aggregate/output/acute/Line_Operation",
+
+      paste0(
+        "HI_summary_",
+        output_prefix,
+        "_wbkg.csv"
+      )
+    ),
+
+    row.names = FALSE
+  )
+
+
+  # ----------------------------------------------------------
+  # 5. Define operation order
+  # ----------------------------------------------------------
+
+  operation_names <- sort(
+    unique(
+      hi_final$Operation[
+        !is.na(hi_final$Operation)
+      ]
+    )
+  )
+
+
+  n_operations <- length(
+    operation_names
+  )
+
+
+  n_panel_columns <- 2
+
+
+  # Number of rows after adding the legend placeholder
+  n_total_slots <- n_operations + 1
+
+
+  n_panel_rows <- ceiling(
+    n_total_slots / n_panel_columns
+  )
+
+
+  # Equal-height rows, matching the HQ bar plot structure
+  row_heights <- rep(
+    1,
+    n_panel_rows
+  )
+
+
+  # ----------------------------------------------------------
+  # 6. Define endpoints used in the shared legend
+  # ----------------------------------------------------------
+
+  if (exceed_only) {
+
+    # Preferred operation from which to construct the
+    # shared exceedance legend
+    legend_operation <- "Coiled Tubing"
+
+
+    # Use the first operation with data as a fallback
+    if (
+      !legend_operation %in%
+        unique(hi_summary$Operation)
+    ) {
+
+      legend_operation <- hi_summary %>%
+        filter(
+          !is.na(Operation)
+        ) %>%
+
+        distinct(
+          Operation
+        ) %>%
+
+        pull(
+          Operation
+        ) %>%
+
+        first()
+    }
+
+
+    endpoint_levels_legend <- hi_summary %>%
+      filter(
+        Operation == legend_operation
+      ) %>%
+
+      distinct(
+        Endpoint
+      ) %>%
+
+      pull(
+        Endpoint
+      ) %>%
+
+      as.character()
+
+
+    endpoint_levels_legend <- endpoint_levels_all[
+      endpoint_levels_all %in%
+        endpoint_levels_legend
+    ]
+
+  } else {
+
+    endpoint_levels_legend <- endpoint_levels_all
+  }
+
+
+  # ----------------------------------------------------------
+  # 7. Create one plot per operation
+  # ----------------------------------------------------------
+
+  plots_by_operation <- lapply(
+    seq_along(operation_names),
+
+    function(op_index) {
+
+      op <- operation_names[op_index]
+
+      op_n <- operation_n_lookup[[op]]
+
+
+      operation_df <- hi_summary %>%
+        filter(
+          Operation == op
+        ) %>%
+
+        droplevels()
+
+
+      # Endpoints actually present in this operation
+      operation_endpoint_levels <- operation_df %>%
+        distinct(
+          Endpoint
+        ) %>%
+
+        pull(
+          Endpoint
+        ) %>%
+
+        as.character()
+
+
+      # Preserve global endpoint ordering
+      operation_endpoint_levels <- endpoint_levels_all[
+        endpoint_levels_all %in%
+          operation_endpoint_levels
+      ]
+
+
+      # Operation-specific x-axis breaks
+      x_breaks <- sort(
+        unique(
+          operation_df$distance_ft
+        )
+      )
+
+
+      # Thin breaks only if there are substantially more than
+      # the standard 500-foot intervals
+      if (length(x_breaks) > 12) {
+
+        x_breaks_display <- x_breaks[
+          seq(
+            from = 1,
+            to = length(x_breaks),
+            by = 2
+          )
+        ]
+
+      } else {
+
+        x_breaks_display <- x_breaks
+      }
+
+
+      p <- ggplot(
+        operation_df,
+
+        aes(
+          x = distance_ft,
+          y = HI_mean,
+          color = Endpoint,
+          shape = Endpoint,
+          group = Endpoint
+        )
+      ) +
+
+        geom_line(
+          linewidth = 1
+        ) +
+
+        geom_point(
+          size = 2.3,
+          stroke = 0.8
+        ) +
+
+        geom_errorbar(
+          aes(
+            ymin = HI_ymin,
+            ymax = HI_ymax
+          ),
+          width = 50,
+          alpha = 0.45,
+          linewidth = 0.35
+        ) +
+
+        geom_hline(
+          yintercept = 1,
+          linetype = "dashed",
+          linewidth = 0.6
+        ) +
+
+        geom_vline(
+          xintercept = 2000,
+          linetype = "dotted",
+          color = "red",
+          linewidth = 0.7
+        ) +
+
+        scale_color_manual(
+          name = "Endpoint",
+          values = endpoint_colors,
+          breaks = operation_endpoint_levels,
+          limits = operation_endpoint_levels,
+          drop = TRUE
+        ) +
+
+        scale_shape_manual(
+          name = "Endpoint",
+          values = endpoint_shapes,
+          breaks = operation_endpoint_levels,
+          limits = operation_endpoint_levels,
+          drop = TRUE
+        ) +
+
+        scale_x_continuous(
+          breaks = x_breaks_display,
+
+          expand = expansion(
+            mult = c(
+              0.02,
+              0.02
+            )
+          )
+        ) +
+
+        scale_y_continuous(
+          expand = expansion(
+            mult = c(
+              0,
+              0.04
+            )
+          )
+        ) +
+
+labs(
+  tag = LETTERS[op_index],
+
+  title = paste0(
+    stringr::str_wrap(
+      op,
+      width = 28
+    ),
+    "\n(n = ",
+    op_n,
+    ")"
+  ),
+
+  x = NULL,
+  y = NULL
+) +
+
+        guides(
+          color = guide_legend(
+            ncol = 1,
+            byrow = TRUE,
+
+            override.aes = list(
+              linewidth = 1.1,
+              size = 3.5
+            )
+          ),
+
+          shape = guide_legend(
+            ncol = 1,
+            byrow = TRUE,
+
+            override.aes = list(
+              size = 3.5
+            )
+          )
+        ) +
+
+        theme_minimal(
+          base_size = 11
+        ) +
+
+        theme(
+          plot.title = element_text(
+            hjust = 0.5,
+            face = "bold",
+            size = 12,
+            lineheight = 0.95,
+
+            margin = margin(
+              b = 6
+            )
+          ),
+
+          # Panel-label appearance and position
+          plot.tag = element_text(
+            face = "bold",
+            size = 11,
+            hjust = 0,
+            vjust = 1
+          ),
+
+          plot.tag.position = c(
+            0,
+            1
+          ),
+
+          # Retain x-axis labels and ticks on every panel
+          axis.text.x = element_text(
+            angle = 45,
+            hjust = 1,
+            vjust = 1,
+            size = 9.5
+          ),
+
+          axis.ticks.x = element_line(
+            linewidth = 0.3
+          ),
+
+          axis.text.y = element_text(
+            size = 10
+          ),
+
+          axis.ticks.y = element_line(
+            linewidth = 0.3
+          ),
+
+          # Remove individual panel axis titles
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+
+          legend.title = element_text(
+            face = "bold",
+            size = 11
+          ),
+
+          legend.text = element_text(
+            size = 10
+          ),
+
+          legend.key.size = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.key.height = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.key.width = grid::unit(
+            0.44,
+            "cm"
+          ),
+
+          legend.spacing.y = grid::unit(
+            0.03,
+            "cm"
+          ),
+
+          legend.margin = margin(
+            t = 0,
+            r = 0,
+            b = 0,
+            l = 0
+          ),
+
+          panel.grid.minor = element_blank(),
+
+          # Slightly more space for panel tag
+          plot.margin = margin(
+            t = 8,
+            r = 5,
+            b = 5,
+            l = 8
+          )
+        )
+
+
+      p
+    }
+  )
+
+
+  names(
+    plots_by_operation
+  ) <- operation_names
+
+
+  # ----------------------------------------------------------
+  # 8. Create combined two-column graph section
+  # ----------------------------------------------------------
+
+  if (exceed_only) {
+
+    # --------------------------------------------------------
+    # Exceedance plots:
+    # create a dedicated legend and place it in the final slot
+    # --------------------------------------------------------
+
+    legend_source_plot <-
+      plots_by_operation[[legend_operation]] +
+
+      scale_color_manual(
+        name = "Endpoint",
+        values = endpoint_colors,
+        breaks = endpoint_levels_legend,
+        limits = endpoint_levels_legend,
+        drop = FALSE
+      ) +
+
+      scale_shape_manual(
+        name = "Endpoint",
+        values = endpoint_shapes,
+        breaks = endpoint_levels_legend,
+        limits = endpoint_levels_legend,
+        drop = FALSE
+      ) +
+
+      guides(
+        color = guide_legend(
+          ncol = 1,
+          byrow = TRUE,
+
+          override.aes = list(
+            linewidth = 1.1,
+            size = 3.5
+          )
+        ),
+
+        shape = guide_legend(
+          ncol = 1,
+          byrow = TRUE,
+
+          override.aes = list(
+            size = 3.5
+          )
+        )
+      ) +
+
+      theme(
+        legend.position = "right",
+        legend.justification = "center",
+        legend.direction = "vertical",
+        legend.box = "vertical",
+
+        legend.title = element_text(
+          face = "bold",
+          size = 11
+        ),
+
+        legend.text = element_text(
+          size = 10
+        ),
+
+        legend.key.size = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.key.height = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.key.width = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.spacing.y = grid::unit(
+          0.03,
+          "cm"
+        ),
+
+        legend.margin = margin(
+          t = 0,
+          r = 0,
+          b = 0,
+          l = 0
+        )
+      )
+
+
+    legend_grob <- cowplot::get_legend(
+      legend_source_plot
+    )
+
+
+    legend_panel <- patchwork::wrap_elements(
+      full = cowplot::ggdraw(
+        legend_grob
+      ),
+      ignore_tag = TRUE
+    )
+
+
+    plots_without_legends <- lapply(
+      plots_by_operation,
+
+      function(p) {
+
+        p +
+          theme(
+            legend.position = "none"
+          )
+      }
+    )
+
+
+    plot_list_with_legend <- c(
+      plots_without_legends,
+
+      list(
+        legend_panel
+      )
+    )
+
+
+    graph_section <- patchwork::wrap_plots(
+      plotlist = plot_list_with_legend,
+      ncol = 2,
+      heights = row_heights
+    )
+
+  } else {
+
+    # --------------------------------------------------------
+    # All-endpoint plots:
+    # use the complete shared endpoint legend
+    # --------------------------------------------------------
+
+    panel_plots <- lapply(
+      plots_by_operation,
+
+      function(p) {
+
+        p +
+
+          scale_color_manual(
+            name = "Endpoint",
+            values = endpoint_colors,
+            breaks = endpoint_levels_all,
+            limits = endpoint_levels_all,
+            drop = FALSE
+          ) +
+
+          scale_shape_manual(
+            name = "Endpoint",
+            values = endpoint_shapes,
+            breaks = endpoint_levels_all,
+            limits = endpoint_levels_all,
+            drop = FALSE
+          ) +
+
+          guides(
+            color = guide_legend(
+              ncol = 1,
+              byrow = TRUE,
+
+              override.aes = list(
+                linewidth = 1.1,
+                size = 3.5
+              )
+            ),
+
+            shape = guide_legend(
+              ncol = 1,
+              byrow = TRUE,
+
+              override.aes = list(
+                size = 3.5
+              )
+            )
+          )
+      }
+    )
+
+
+    plot_list_with_legend <- c(
+      panel_plots,
+
+      list(
+        patchwork::guide_area()
+      )
+    )
+
+
+    graph_section <- patchwork::wrap_plots(
+      plotlist = plot_list_with_legend,
+      ncol = 2,
+      guides = "collect",
+      heights = row_heights
+    ) &
+
+      theme(
+        legend.position = "right",
+        legend.justification = "center",
+        legend.direction = "vertical",
+        legend.box = "vertical",
+
+        legend.title = element_text(
+          face = "bold",
+          size = 11
+        ),
+
+        legend.text = element_text(
+          size = 10
+        ),
+
+        legend.key.size = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.key.height = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.key.width = grid::unit(
+          0.44,
+          "cm"
+        ),
+
+        legend.spacing.y = grid::unit(
+          0.03,
+          "cm"
+        ),
+
+        legend.margin = margin(
+          t = 0,
+          r = 0,
+          b = 0,
+          l = 0
+        )
+      )
+  }
+
+
+  # ----------------------------------------------------------
+  # 9. Create one shared x-axis title
+  # ----------------------------------------------------------
+
+  shared_x_axis_title <- patchwork::wrap_elements(
+    full = grid::textGrob(
+      label = "Distance from Wellpad (ft)",
+      x = 0.5,
+      y = 0.65,
+      just = "center",
+
+      gp = grid::gpar(
+        fontsize = 11.5
+      )
+    ),
+
+    ignore_tag = TRUE
+  )
+
+
+  # ----------------------------------------------------------
+  # 10. Create one shared y-axis title
+  # ----------------------------------------------------------
+
+  shared_y_axis_title <- patchwork::wrap_elements(
+    full = grid::textGrob(
+      label = paste0(
+        "Average HI (",
+        ozone_label,
+        " ozone)"
+      ),
+      x = 0.55,
+      y = 0.5,
+      just = "center",
+      rot = 90,
+
+      gp = grid::gpar(
+        fontsize = 11.5
+      )
+    ),
+
+    ignore_tag = TRUE
+  )
+
+
+  # ----------------------------------------------------------
+  # 11. Add shared y-axis title beside graph section
+  # ----------------------------------------------------------
+
+  graph_with_y_title <- (
+    shared_y_axis_title |
+      graph_section
+  ) +
+
+    patchwork::plot_layout(
+      widths = c(
+        0.045,
+        1
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # 12. Add shared x-axis title beneath complete figure
+  # ----------------------------------------------------------
+
+  combined_plot <- (
+    graph_with_y_title /
+      shared_x_axis_title
+  ) +
+
+    patchwork::plot_layout(
+      heights = c(
+        1,
+        0.035
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # 13. Save combined panel plot
+  # ----------------------------------------------------------
 
   ggsave(
     filename = file.path(
-      "~/CO_CRA/CO_CRA_aggregate/output/acute",
-      paste0("combined_HQHI_", ep_name, ".png")
+      "~/CO_CRA/CO_CRA_aggregate/output/acute/Line_Operation",
+
+      paste0(
+        "HI_",
+        output_prefix,
+        "_wbkg_panel.png"
+      )
     ),
-    plot = combined_plots[[i]],
-    width = 12,
-    height = 14,
-    dpi = 300
+
+    plot = combined_plot,
+
+    # Match the dimensions and resolution of the HQ bar plots
+    width = 7,
+    height = 10,
+    units = "in",
+    dpi = 400,
+    bg = "white"
+  )
+
+
+  # ----------------------------------------------------------
+  # 14. Return results
+  # ----------------------------------------------------------
+
+  return(
+    list(
+      summary = hi_summary,
+      plots = plots_by_operation,
+      graph_section = graph_section,
+      panel = combined_plot
+    )
   )
 }
+
+
+
+# ============================================================
+# Run all four plot sets
+# ============================================================
+
+p95_all <- make_operation_hi_plots(
+  hi_col = "HI_total_p95",
+  ozone_label = "p95",
+  exceed_only = FALSE,
+  output_prefix = "p95"
+)
+
+
+p50_all <- make_operation_hi_plots(
+  hi_col = "HI_total_p50",
+  ozone_label = "p50",
+  exceed_only = FALSE,
+  output_prefix = "p50"
+)
+
+
+p95_exceed <- make_operation_hi_plots(
+  hi_col = "HI_total_p95",
+  ozone_label = "p95",
+  exceed_only = TRUE,
+  output_prefix = "p95_exceedHI1"
+)
+
+
+p50_exceed <- make_operation_hi_plots(
+  hi_col = "HI_total_p50",
+  ozone_label = "p50",
+  exceed_only = TRUE,
+  output_prefix = "p50_exceedHI1"
+)
+
+
+
+# ============================================================
+# View final combined panels
+# ============================================================
+
+p95_all$panel
+
+p50_all$panel
+
+p95_exceed$panel
+
+p50_exceed$panel
 ```
+
+
+
+
+#pulling data on just the min, max, average for each endpoint and operation at every distance in the line graphs above for the MS (p95 ozone)
+```{r}
+#long format
+hi_exceedance_table <- p95_exceed$summary %>%
+  select(
+    Operation,
+    Endpoint,
+    distance_ft,
+    n,
+    HI_mean,
+    HI_min,
+    HI_max
+  ) %>%
+  arrange(
+    Operation,
+    Endpoint,
+    distance_ft
+  )
+
+
+#wide format
+hi_publication_table_wide <- p95_exceed$summary %>%
+  select(
+    Operation,
+    Endpoint,
+    distance_ft,
+    n,
+    HI_mean,
+    HI_min,
+    HI_max
+  ) %>%
+
+  # Add "ft" to the distance portion of each column name
+  mutate(
+    distance_label = paste0(
+      distance_ft,
+      "ft"
+    )
+  ) %>%
+
+  select(
+    Operation,
+    Endpoint,
+    n,
+    distance_label,
+    HI_mean,
+    HI_min,
+    HI_max
+  ) %>%
+
+  pivot_wider(
+    names_from = distance_label,
+    values_from = c(
+      HI_mean,
+      HI_min,
+      HI_max
+    ),
+    names_glue = "{.value}_{distance_label}"
+  ) %>%
+
+  arrange(
+    Operation,
+    Endpoint
+  )
+
+
+# Save the table
+write.csv(
+  hi_publication_table_wide,
+
+  file = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute/Line_Operation",
+    "Table_HI_p95_exceedHI1_wide_by_distance.csv"
+  ),
+
+  row.names = FALSE
+)
+```
+
+
 
 
 
@@ -892,47 +2945,1186 @@ for (i in seq_along(combined_plots)) {
 
 #plot of total HI vs. distance
 ```{r}
-# define event time
+# ------------------------------------------------------------
+# 1. Define event time
+# ------------------------------------------------------------
+
+event_time <- as.POSIXct(
+  "2021-06-23 09:48",
+  tz = "UTC"
+)
+
+
+# ------------------------------------------------------------
+# 2. Filter to the selected event
+# ------------------------------------------------------------
+
+event_df <- hi_final %>%
+  filter(
+    `Start Date Time` == event_time
+  )
+
+
+# ------------------------------------------------------------
+# 3. Identify endpoints with HI > 1 specifically at 500 ft
+# ------------------------------------------------------------
+
+endpoints_exceeding_500ft <- event_df %>%
+  filter(
+    distance_ft == 500,
+    !is.na(HI_total_p95)
+  ) %>%
+  group_by(
+    Endpoint
+  ) %>%
+  summarise(
+    HI_500ft = max(
+      HI_total_p95,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  filter(
+    HI_500ft > 1
+  ) %>%
+  pull(
+    Endpoint
+  ) %>%
+  as.character()
+
+
+# ------------------------------------------------------------
+# 4. Preserve the global endpoint order
+# ------------------------------------------------------------
+
+endpoint_levels_plot <- endpoint_levels_all[
+  endpoint_levels_all %in%
+    endpoints_exceeding_500ft
+]
+
+
+# ------------------------------------------------------------
+# 5. Filter plotting dataset
+# ------------------------------------------------------------
+
+plot_df <- event_df %>%
+  filter(
+    Endpoint %in% endpoint_levels_plot
+  ) %>%
+  mutate(
+    Endpoint = factor(
+      Endpoint,
+      levels = endpoint_levels_plot
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 6. Confirm that colors and shapes are being matched by name
+# ------------------------------------------------------------
+
+endpoint_style_check <- data.frame(
+  Endpoint = endpoint_levels_plot,
+  color = unname(
+    endpoint_colors[
+      endpoint_levels_plot
+    ]
+  ),
+  shape = unname(
+    endpoint_shapes[
+      endpoint_levels_plot
+    ]
+  )
+)
+
+print(
+  endpoint_style_check
+)
+
+
+# ------------------------------------------------------------
+# 7. Define x-axis breaks every 500 ft
+# ------------------------------------------------------------
+
+x_min <- floor(
+  min(
+    plot_df$distance_ft,
+    na.rm = TRUE
+  ) / 500
+) * 500
+
+
+x_max <- ceiling(
+  max(
+    plot_df$distance_ft,
+    na.rm = TRUE
+  ) / 500
+) * 500
+
+
+x_breaks_500 <- seq(
+  from = x_min,
+  to = x_max,
+  by = 500
+)
+
+
+# ------------------------------------------------------------
+# 8. Create plot
+# ------------------------------------------------------------
+
+hi_distance_ex <- ggplot(
+  plot_df,
+  aes(
+    x = distance_ft,
+    y = HI_total_p95,
+    color = Endpoint,
+    shape = Endpoint,
+    group = Endpoint
+  )
+) +
+
+  geom_line(
+    linewidth = 1
+  ) +
+
+  geom_point(
+    size = 2.3,
+    stroke = 0.8
+  ) +
+
+  geom_hline(
+    yintercept = 1,
+    linetype = "dashed",
+    linewidth = 0.6
+  ) +
+  
+  geom_vline(
+    xintercept = 2000,
+    linetype = "dotted",
+    color = "red",
+    linewidth = 0.8
+  ) +
+
+  scale_color_manual(
+    name = "Endpoint",
+
+    # Subset the original named vector by endpoint name
+    values = endpoint_colors[
+      endpoint_levels_plot
+    ],
+
+    breaks = endpoint_levels_plot,
+    limits = endpoint_levels_plot,
+    drop = TRUE
+  ) +
+
+  scale_shape_manual(
+    name = "Endpoint",
+
+    # Subset the original named vector by endpoint name
+    values = endpoint_shapes[
+      endpoint_levels_plot
+    ],
+
+    breaks = endpoint_levels_plot,
+    limits = endpoint_levels_plot,
+    drop = TRUE
+  ) +
+
+  scale_x_continuous(
+    breaks = x_breaks_500,
+    limits = c(
+      x_min,
+      x_max
+    ),
+    expand = expansion(
+      mult = c(
+        0.01,
+        0.01
+      )
+    )
+  ) +
+
+  scale_y_continuous(
+    expand = expansion(
+      mult = c(
+        0,
+        0.04
+      )
+    )
+  ) +
+
+  labs(
+    x = "Distance from Wellpad (ft)",
+    y = "Hazard Index (HI) - p95 Ozone",
+    color = "Endpoint",
+    shape = "Endpoint",
+    title = NULL
+  ) +
+
+  guides(
+    color = guide_legend(
+      ncol = 1,
+      byrow = TRUE,
+      override.aes = list(
+        linewidth = 1.1,
+        size = 3.5
+      )
+    ),
+
+    shape = guide_legend(
+      ncol = 1,
+      byrow = TRUE,
+      override.aes = list(
+        size = 3.5
+      )
+    )
+  ) +
+
+  theme_minimal(
+    base_size = 11
+  ) +
+
+theme(
+  axis.text.x = element_text(
+    angle = 45,
+    hjust = 1,
+    vjust = 1,
+    size = 9.5
+  ),
+
+  axis.text.y = element_text(
+    size = 10
+  ),
+
+  axis.title.x = element_text(
+    size = 11.5,
+    margin = margin(t = 8)
+  ),
+
+  axis.title.y = element_text(
+    size = 11.5,
+    margin = margin(r = 8)
+  ),
+
+  legend.position = c(0.65, 0.78),
+  legend.justification = c(0, 1),
+
+  # Give the legend a white box
+  legend.background = element_rect(
+    fill = "white",
+    colour = "black",
+    linewidth = 0.3
+  ),
+
+  legend.box.background = element_blank(),
+
+  legend.title = element_text(
+    face = "bold",
+    size = 11
+  ),
+
+  legend.text = element_text(
+    size = 10
+  ),
+
+  legend.key.size = grid::unit(
+    0.44,
+    "cm"
+  ),
+
+  legend.key.height = grid::unit(
+    0.44,
+    "cm"
+  ),
+
+  legend.key.width = grid::unit(
+    0.44,
+    "cm"
+  ),
+
+  legend.spacing.y = grid::unit(
+    0.03,
+    "cm"
+  ),
+
+  panel.grid.minor = element_blank()
+)
+
+
+# ------------------------------------------------------------
+# 9. View plot
+# ------------------------------------------------------------
+
+hi_distance_ex
+
+
+# ------------------------------------------------------------
+# 10. Save plot
+# ------------------------------------------------------------
+
+ggsave(
+  filename = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "sepmain_2021-06-23_HIvdistance.png"
+  ),
+
+  plot = hi_distance_ex,
+
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+
+# ------------------------------------------------------------
+# 11. Save plotted data
+# ------------------------------------------------------------
+
+write.csv(
+  plot_df,
+
+  file = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "sepmain_2021-06-23_HIvdistance.csv"
+  ),
+
+  row.names = FALSE
+)
+
+# ------------------------------------------------------------
+# 11. Save data for all endpoints for the selected event
+# ------------------------------------------------------------
+
+event_df_all_endpoints <- event_df %>%
+  mutate(
+    Endpoint = factor(
+      Endpoint,
+      levels = endpoint_levels_all
+    )
+  ) %>%
+  arrange(
+    Endpoint,
+    distance_ft
+  )
+
+
+write.csv(
+  event_df_all_endpoints,
+
+  file = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "sepmain_2021-06-23_HIvdistance_all_endpoints.csv"
+  ),
+
+  row.names = FALSE
+)
+```
+
+
+#plot of chemical contributions
+```{r}
+# ------------------------------------------------------------
+# 1. Filter HQ data for the selected event and endpoints
+# ------------------------------------------------------------
+
+hq_event_df <- hq_all %>%
+  filter(
+    `Start Date Time` == event_time
+  ) %>%
+
+  group_by(
+    Operation,
+    Endpoint,
+    distance_ft,
+    chemical
+  ) %>%
+
+  summarise(
+    HQ_mean = mean(
+      HQ,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+
+  filter(
+    Endpoint %in% endpoints_exceeding
+  )
+
+
+# ------------------------------------------------------------
+# 2. Clean chemical and endpoint names
+# ------------------------------------------------------------
+
+hq_event_df <- hq_event_df %>%
+  mutate(
+    chemical = recode(
+      chemical,
+      "aliphatic_low"   = "Aliphatic low",
+      "aromatic_medium" = "Aromatic medium",
+      "benzene"         = "Benzene",
+      "c2cl4"           = "PCE",
+      "c2hcl3"          = "TCE",
+      "ethylbenzene"    = "Ethylbenzene",
+      "n_nonane"        = "n_Nonane",
+      "ozone"           = "Ozone (p95)",
+      "styrene"         = "Styrene",
+      "toluene"         = "Toluene",
+      "xylenes"         = "Xylenes"
+    ),
+
+    Endpoint_label = stringr::str_to_title(
+      as.character(Endpoint)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 3. Define chemical legend labels
+# ------------------------------------------------------------
+
+chemical_legend_labels <- c(
+  "Aliphatic low"   = "Aliphatic low (Al)",
+  "Aromatic medium" = "Aromatic medium (Am)",
+  "Benzene"         = "Benzene (B)",
+  "Ethylbenzene"    = "Ethylbenzene (E)",
+  "n_Nonane"        = "n_Nonane (N)",
+  "Ozone (p95)"     = "p95 Ozone (O)",
+  "PCE"             = "PCE (P)",
+  "Styrene"         = "Styrene (S)",
+  "TCE"             = "TCE (T)",
+  "Toluene"         = "Toluene (To)",
+  "Xylenes"         = "Xylenes (X)"
+)
+
+
+# ------------------------------------------------------------
+# 4. Define the six endpoints to be plotted
+# ------------------------------------------------------------
+
+endpoint_names <- hq_event_df %>%
+  distinct(
+    Endpoint,
+    Endpoint_label
+  ) %>%
+  mutate(
+    Endpoint_order = match(
+      Endpoint,
+      endpoints_exceeding
+    )
+  ) %>%
+  arrange(
+    Endpoint_order
+  ) %>%
+  pull(
+    Endpoint
+  ) %>%
+  as.character()
+
+
+# Restrict to the six endpoint graphs being shown
+endpoint_names <- endpoint_names[
+  seq_len(
+    min(
+      6,
+      length(endpoint_names)
+    )
+  )
+]
+
+
+# ------------------------------------------------------------
+# 5. Retain only chemicals that contribute HQ > 0 in at least
+#    one of the six endpoint graphs
+# ------------------------------------------------------------
+
+chemicals_present <- hq_event_df %>%
+  filter(
+    Endpoint %in% endpoint_names,
+    !is.na(chemical),
+    !is.na(HQ_mean),
+    HQ_mean > 0
+  ) %>%
+  distinct(
+    chemical
+  ) %>%
+  pull(
+    chemical
+  ) %>%
+  as.character()
+
+
+# Preserve the order defined in chemical_colors
+chemical_order <- names(chemical_colors)[
+  names(chemical_colors) %in% chemicals_present
+]
+
+
+# Confirm the result
+print(
+  chemical_order
+)
+
+
+# Optional table showing each chemical's contribution across
+# the six displayed endpoint graphs
+chemical_contribution_check <- hq_event_df %>%
+  filter(
+    Endpoint %in% endpoint_names,
+    !is.na(chemical)
+  ) %>%
+  group_by(
+    chemical
+  ) %>%
+  summarise(
+    max_HQ = max(
+      HQ_mean,
+      na.rm = TRUE
+    ),
+
+    total_HQ = sum(
+      HQ_mean,
+      na.rm = TRUE
+    ),
+
+    endpoints_contributed_to = n_distinct(
+      Endpoint[
+        HQ_mean > 0
+      ]
+    ),
+
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(total_HQ)
+  )
+
+
+print(
+  chemical_contribution_check
+)
+
+
+# Create the final legend labels for only those chemicals
+chemical_labels_used <- chemical_legend_labels[
+  chemical_order
+]
+
+
+# Apply the same reduced chemical order to the plotting data
+hq_event_df <- hq_event_df %>%
+  filter(
+    Endpoint %in% endpoint_names
+  ) %>%
+  mutate(
+    chemical = factor(
+      chemical,
+      levels = chemical_order
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 6. Create one plot per endpoint
+# ------------------------------------------------------------
+
+endpoint_plots <- lapply(
+  seq_along(endpoint_names),
+  function(endpoint_index) {
+
+    ep <- endpoint_names[endpoint_index]
+
+    endpoint_df <- hq_event_df %>%
+      filter(
+        Endpoint == ep
+      ) %>%
+      mutate(
+        # Keep the same chemical levels in every graph
+        chemical = factor(
+          as.character(chemical),
+          levels = chemical_order
+        )
+      )
+
+    endpoint_title <- endpoint_df %>%
+      distinct(Endpoint_label) %>%
+      pull(Endpoint_label) %>%
+      first()
+
+    # Sort distances numerically
+    distance_levels <- endpoint_df %>%
+      distinct(distance_ft) %>%
+      arrange(distance_ft) %>%
+      pull(distance_ft) %>%
+      as.character()
+
+    endpoint_df <- endpoint_df %>%
+      mutate(
+        distance_factor = factor(
+          as.character(distance_ft),
+          levels = distance_levels
+        )
+      )
+
+    ggplot(
+      endpoint_df,
+      aes(
+        x = distance_factor,
+        y = HQ_mean,
+        fill = chemical
+      )
+    ) +
+
+      geom_col(
+        position = "stack",
+        width = 0.8
+      ) +
+
+      geom_hline(
+        yintercept = 1,
+        linetype = "dashed",
+        linewidth = 0.6
+      ) +
+
+      scale_fill_manual(
+        name = "Chemical",
+        values = chemical_colors[chemical_order],
+        breaks = chemical_order,
+        limits = chemical_order,
+        labels = chemical_labels_used,
+
+        # Keep the identical legend definition in every graph
+        drop = FALSE
+      ) +
+
+      scale_y_continuous(
+        expand = expansion(
+          mult = c(0, 0.03)
+        )
+      ) +
+
+      labs(
+        tag = LETTERS[endpoint_index],
+        title = endpoint_title,
+        x = NULL,
+        y = NULL
+      ) +
+
+      guides(
+        fill = guide_legend(
+          ncol = 4,
+          byrow = TRUE
+        )
+      ) +
+
+      theme_minimal(
+        base_size = 11
+      ) +
+
+      theme(
+        plot.title = element_text(
+          hjust = 0.5,
+          face = "bold",
+          size = 12,
+          lineheight = 0.95,
+          margin = margin(b = 6)
+        ),
+
+        plot.tag = element_text(
+          face = "bold",
+          size = 11,
+          hjust = 0,
+          vjust = 1
+        ),
+
+        plot.tag.position = c(
+          0,
+          1
+        ),
+
+        axis.text.x = element_text(
+          angle = 45,
+          hjust = 1,
+          vjust = 1,
+          size = 9.5
+        ),
+
+        axis.text.y = element_text(
+          size = 10
+        ),
+
+        axis.ticks.x = element_line(
+          linewidth = 0.3
+        ),
+
+        axis.ticks.y = element_line(
+          linewidth = 0.3
+        ),
+
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+
+        legend.title = element_text(
+          face = "bold",
+          size = 11
+        ),
+
+        legend.text = element_text(
+          size = 9.5
+        ),
+
+        legend.key.size = grid::unit(
+          0.4,
+          "cm"
+        ),
+
+        legend.key.height = grid::unit(
+          0.4,
+          "cm"
+        ),
+
+        legend.key.width = grid::unit(
+          0.4,
+          "cm"
+        ),
+
+        legend.spacing.x = grid::unit(
+          0.15,
+          "cm"
+        ),
+
+        legend.spacing.y = grid::unit(
+          0.08,
+          "cm"
+        ),
+
+        legend.margin = margin(
+          t = 2,
+          r = 2,
+          b = 2,
+          l = 2
+        ),
+
+        panel.grid.minor = element_blank(),
+
+        plot.margin = margin(
+          t = 8,
+          r = 5,
+          b = 5,
+          l = 8
+        )
+      )
+  }
+)
+
+names(endpoint_plots) <- endpoint_names
+
+# ------------------------------------------------------------
+# 7. Create one dedicated shared legend containing only
+#    chemicals with HQ > 0 in at least one displayed panel
+# ------------------------------------------------------------
+
+legend_df <- data.frame(
+  chemical = factor(
+    chemical_order,
+    levels = chemical_order
+  ),
+
+  x = seq_along(
+    chemical_order
+  ),
+
+  y = 1
+)
+
+
+legend_source_plot <- ggplot(
+  legend_df,
+  aes(
+    x = x,
+    y = y,
+    fill = chemical
+  )
+) +
+
+  geom_col() +
+
+  scale_fill_manual(
+    name = "Chemical",
+    values = chemical_colors[
+      chemical_order
+    ],
+    breaks = chemical_order,
+    limits = chemical_order,
+    labels = chemical_labels_used,
+    drop = FALSE
+  ) +
+
+  guides(
+    fill = guide_legend(
+      ncol = 4,
+      byrow = TRUE,
+      title.position = "top",
+      title.hjust = 0.5
+    )
+  ) +
+
+  theme_void() +
+
+  theme(
+    legend.position = "bottom",
+    legend.justification = "center",
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
+
+    legend.title = element_text(
+      face = "bold",
+      size = 11,
+      hjust = 0.5
+    ),
+
+    legend.text = element_text(
+      size = 9.5
+    ),
+
+    legend.key.size = grid::unit(
+      0.4,
+      "cm"
+    ),
+
+    legend.key.height = grid::unit(
+      0.4,
+      "cm"
+    ),
+
+    legend.key.width = grid::unit(
+      0.4,
+      "cm"
+    ),
+
+    legend.spacing.x = grid::unit(
+      0.15,
+      "cm"
+    ),
+
+    legend.spacing.y = grid::unit(
+      0.08,
+      "cm"
+    ),
+
+    legend.margin = margin(
+      t = 2,
+      r = 2,
+      b = 2,
+      l = 2
+    )
+  )
+
+
+shared_legend_grob <- cowplot::get_legend(
+  legend_source_plot
+)
+
+
+shared_legend_panel <- patchwork::wrap_elements(
+  full = shared_legend_grob,
+  ignore_tag = TRUE
+)
+
+
+# ------------------------------------------------------------
+# 8. Remove legends from all six endpoint graphs
+# ------------------------------------------------------------
+
+endpoint_plots_noleg <- lapply(
+  endpoint_plots,
+  function(p) {
+
+    p +
+      theme(
+        legend.position = "none"
+      )
+  }
+)
+
+
+# ------------------------------------------------------------
+# 9. Assemble the six endpoint graphs in two columns
+# ------------------------------------------------------------
+
+graph_section <- patchwork::wrap_plots(
+  plotlist = endpoint_plots_noleg,
+  ncol = 2
+)
+
+
+# ------------------------------------------------------------
+# 10. Create the shared y-axis title
+# ------------------------------------------------------------
+
+shared_y_axis_title <- patchwork::wrap_elements(
+  full = grid::textGrob(
+    label = "Hazard Quotient (HQ)",
+    x = 0.55,
+    y = 0.5,
+    just = "center",
+    rot = 90,
+
+    gp = grid::gpar(
+      fontsize = 11.5
+    )
+  ),
+
+  ignore_tag = TRUE
+)
+
+
+# ------------------------------------------------------------
+# 11. Put the shared y-axis title beside the graph panels
+# ------------------------------------------------------------
+
+graph_with_y_title <- (
+  shared_y_axis_title |
+    graph_section
+) +
+
+  patchwork::plot_layout(
+    widths = c(
+      0.045,
+      1
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 12. Create the shared x-axis title
+# ------------------------------------------------------------
+
+shared_x_axis_title <- patchwork::wrap_elements(
+  full = grid::textGrob(
+    label = "Distance from Wellpad (ft)",
+    x = 0.5,
+    y = 0.65,
+    just = "center",
+
+    gp = grid::gpar(
+      fontsize = 11.5
+    )
+  ),
+
+  ignore_tag = TRUE
+)
+
+
+# ------------------------------------------------------------
+# 13. Assemble graphs, one legend, and one x-axis title
+# ------------------------------------------------------------
+
+hq_event_plot <- (
+  graph_with_y_title /
+    shared_x_axis_title /
+    shared_legend_panel
+) +
+  patchwork::plot_layout(
+    heights = c(
+      1,
+      0.035,
+      0.13
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 14. View completed figure
+# ------------------------------------------------------------
+
+hq_event_plot
+
+
+# ------------------------------------------------------------
+# 15. Save completed figure
+# ------------------------------------------------------------
+
+ggsave(
+  filename = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "sepmain_2021-06-23_HQvdistance.png"
+  ),
+
+  plot = hq_event_plot,
+
+  width = 7,
+  height = 9,
+  units = "in",
+  dpi = 400,
+  bg = "white"
+)
+
+
+# ------------------------------------------------------------
+# 14. Create and save raw HQ data for reporting
+# ------------------------------------------------------------
+
+hq_event_raw <- hq_all %>%
+  filter(
+    `Start Date Time` == event_time
+  )
+
+
+write.csv(
+  hq_event_raw,
+
+  file = file.path(
+    "~/CO_CRA/CO_CRA_aggregate/output/acute",
+    "sepmain_2021-06-23_HQs.csv"
+  ),
+
+  row.names = FALSE
+)
+
+```
+
+
+
+
+#what fraction of the exposure for this event is attributable to the acute event and the monthly data
+```{r}
+# Definte event
 event_time <- as.POSIXct("2021-06-23 09:48", tz = "UTC")
 
+# Chronic concentrations
+chronic_event <- chronic_ready %>%
+  filter(`Start Date Time` == event_time) %>%
+  group_by(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    chronic_concentration = sum(concentration, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Acute concentrations
+acute_event <- acute_clean %>%
+  filter(`Start Date Time` == event_time) %>%
+  group_by(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    acute_concentration = sum(concentration, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join together
+source_contributions <- full_join(
+  acute_event,
+  chronic_event,
+  by = c(
+    "Start Date Time",
+    "Source Wellpad",
+    "Sampling Site",
+    "distance_ft",
+    "chemical"
+  )
+) %>%
+  mutate(
+    acute_concentration   = coalesce(acute_concentration, 0),
+    chronic_concentration = coalesce(chronic_concentration, 0),
+
+    total_concentration =
+      acute_concentration + chronic_concentration,
+
+    pct_acute =
+      if_else(
+        total_concentration > 0,
+        100 * acute_concentration / total_concentration,
+        NA_real_
+      ),
+
+    pct_chronic =
+      if_else(
+        total_concentration > 0,
+        100 * chronic_concentration / total_concentration,
+        NA_real_
+      )
+  ) %>%
+  arrange(chemical, distance_ft)
+
+# Save
+write.csv(
+  source_contributions,
+  "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-06-23_source_concentrations.csv",
+  row.names = FALSE
+)
+
+source_contributions
+```
+
+
+
+
+#### graphs for the other separator maintenance scenario (not using these graphs in the MS or supplemental - just using the data; so not updating the graphs) ####
+
+
+
+#The separator maintenance trigger canister is the one dated 4/26/2021 from the Livingston sensor (labeled as production)
+
+#plot of total HI vs. distance
+```{r}
+# define event time
+event_time <- as.POSIXct("2021-04-26 10:38", tz = "UTC")
+
 # STEP 1: filter to the event 
-event_df <- hi_final %>%
+plot_df <- hi_final %>%
   filter(`Start Date Time` == event_time)
 
-# STEP 2: identify endpoints exceeding HI > 1 within this event only
-endpoints_exceeding <- event_df %>%
+# optional check: max HI by endpoint
+endpoint_max_check <- plot_df %>%
   group_by(Endpoint) %>%
   summarise(
     HI_max = max(HI_total_p95, na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  filter(HI_max > 1) %>%
-  pull(Endpoint)
+  arrange(desc(HI_max))
 
-# STEP 3: filter plotting dataset
-plot_df <- event_df %>%
-  filter(Endpoint %in% endpoints_exceeding)
+endpoint_max_check
 
-# COLORBLIND-FRIENDLY PALETTE (Okabe-Ito + extensions if needed)
+# COLORBLIND-FRIENDLY PALETTE
 endpoint_colors <- c(
   "#0072B2", # blue
   "#D55E00", # vermillion
   "#009E73", # bluish green
   "#F0E442", # yellow
   "#CC79A7", # reddish purple
-  "#56B4E9"  # sky blue
+  "#56B4E9", # sky blue
+  "#E69F00", # orange
+  "#999999"  # gray
 )
 
-# ensure names match endpoints (important)
-names(endpoint_colors) <- sort(unique(plot_df$Endpoint))
+# repeat colors if there are more endpoints than colors
+endpoint_levels <- sort(unique(plot_df$Endpoint))
+endpoint_colors <- rep(endpoint_colors, length.out = length(endpoint_levels))
+names(endpoint_colors) <- endpoint_levels
 
-# STEP 4: plot
-hi_distance_ex <- ggplot(
+# STEP 2: plot all endpoints
+hi_distance_all <- ggplot(
   plot_df,
   aes(
     x = distance_ft,
     y = HI_total_p95,
-    color = Endpoint
+    color = Endpoint,
+    group = Endpoint
   )
 ) +
   geom_line(linewidth = 1) +
@@ -948,12 +4140,12 @@ hi_distance_ex <- ggplot(
   theme_minimal()
 
 # view plot
-hi_distance_ex
+hi_distance_all
 
-# STEP 5: save
+# STEP 3: save
 ggsave(
-  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-06-23_HIvdistance.png",
-  plot = hi_distance_ex,
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-04-26_HIvdistance_all_endpoints.png",
+  plot = hi_distance_all,
   width = 8,
   height = 6,
   dpi = 300
@@ -961,24 +4153,35 @@ ggsave(
 
 write.csv(
   plot_df,
-  file = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-06-23_HIvdistance.csv"
+  file = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-04-26_HIvdistance_all_endpoints.csv",
+  row.names = FALSE
 )
 ```
 
 
 #plot of chemical contributions
 ```{r}
-#filter HQ dataset for event + endpoints that exceed HI of 1
+# endpoints to plot
+endpoints_to_plot <- c(
+  "immunological",
+  "developmental",
+  "hematological",
+  "respiratory"
+)
+
+# filter HQ dataset for event + selected endpoints
 hq_event_df <- hq_all %>%
-  filter(`Start Date Time` == event_time) %>%
+  filter(
+    `Start Date Time` == event_time,
+    Endpoint %in% endpoints_to_plot
+  ) %>%
   group_by(Operation, Endpoint, distance_ft, chemical) %>%
   summarise(
     HQ_mean = mean(HQ, na.rm = TRUE),
     .groups = "drop"
-  ) %>%
-  filter(Endpoint %in% endpoints_exceeding)
+  )
 
-#clean chemical names
+# clean chemical names
 hq_event_df <- hq_event_df %>%
   mutate(
     chemical = recode(
@@ -997,13 +4200,18 @@ hq_event_df <- hq_event_df %>%
     )
   )
 
-#factor levels
+# factor levels
 hq_event_df$chemical <- factor(
   hq_event_df$chemical,
   levels = names(chemical_colors)
 )
 
-#plot HQs, faceted by endpoints
+hq_event_df$Endpoint <- factor(
+  hq_event_df$Endpoint,
+  levels = endpoints_to_plot
+)
+
+# plot HQs, faceted by selected endpoints
 hq_event_plot <- ggplot(
   hq_event_df,
   aes(
@@ -1012,27 +4220,20 @@ hq_event_plot <- ggplot(
     fill = chemical
   )
 ) +
-  
   geom_col(position = "stack", width = 0.8) +
-  
   facet_wrap(~ Endpoint) +
-  
   geom_hline(yintercept = 1, linetype = "dashed") +
-  
   scale_fill_manual(
     values = chemical_colors,
     drop = FALSE
   ) +
-  
   labs(
     title = paste("HQ Contributions by Endpoint - Trigger Event", event_time),
     x = "Distance from Wellpad (ft)",
     y = "Hazard Quotient",
     fill = "Chemical"
   ) +
-  
   theme_minimal() +
-  
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
     strip.text = element_text(face = "bold")
@@ -1042,58 +4243,109 @@ hq_event_plot <- ggplot(
 hq_event_plot
 
 ggsave(
-  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-06-23_HQvdistance.png",
+  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-04-26_HQvdistance_selected_endpoints.png",
   plot = hq_event_plot,
   width = 8,
   height = 6,
   dpi = 300
 )
 
-```
-
-
-#combined plot
-```{r}
-# Panel A (HI)
-pA <- hi_distance_ex +
-  labs(title = NULL, x = NULL) +   # remove title + x label for cleaner panel
-  theme(
-    plot.tag = element_text(face = "bold", size = 14)
-  ) +
-  plot_annotation(tag_levels = "A")
-
-# Panel B (HQ)
-pB <- hq_event_plot +
-  labs(title = NULL) +
-  theme(
-    plot.tag = element_text(face = "bold", size = 14)
-  ) +
-  plot_annotation(tag_levels = "B")
-
-# combine vertically
-combined_fig <- pA / pB +
-  plot_annotation(
-    title = paste("Trigger Event:", event_time)
-  ) &
-  theme(
-    plot.title = element_text(face = "bold", hjust = 0.5, size = 14)
+# create raw HQ dataset to save for reporting, selected endpoints only
+hq_event_raw <- hq_all %>%
+  filter(
+    `Start Date Time` == event_time,
+    Endpoint %in% endpoints_to_plot
   )
 
-# view and save
-combined_fig
-
-ggsave(
-  filename = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-06-23_combed_HQHI.png",
-  plot = combined_fig,
-  width = 12,
-  height = 14,
-  dpi = 300
+write.csv(
+  hq_event_raw,
+  file = "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-04-26_HQs_selected_endpoints.csv",
+  row.names = FALSE
 )
 ```
 
 
 
 
+#what fraction of the exposure for this event is attributable to the acute event and the monthly data
+```{r}
+# Definte event
+event_time <- as.POSIXct("2021-04-26 10:38", tz = "UTC")
+
+# Chronic concentrations
+chronic_event <- chronic_ready %>%
+  filter(`Start Date Time` == event_time) %>%
+  group_by(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    chronic_concentration = sum(concentration, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Acute concentrations
+acute_event <- acute_clean %>%
+  filter(`Start Date Time` == event_time) %>%
+  group_by(
+    `Start Date Time`,
+    `Source Wellpad`,
+    `Sampling Site`,
+    distance_ft,
+    chemical
+  ) %>%
+  summarise(
+    acute_concentration = sum(concentration, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join together
+source_contributions <- full_join(
+  acute_event,
+  chronic_event,
+  by = c(
+    "Start Date Time",
+    "Source Wellpad",
+    "Sampling Site",
+    "distance_ft",
+    "chemical"
+  )
+) %>%
+  mutate(
+    acute_concentration   = coalesce(acute_concentration, 0),
+    chronic_concentration = coalesce(chronic_concentration, 0),
+
+    total_concentration =
+      acute_concentration + chronic_concentration,
+
+    pct_acute =
+      if_else(
+        total_concentration > 0,
+        100 * acute_concentration / total_concentration,
+        NA_real_
+      ),
+
+    pct_chronic =
+      if_else(
+        total_concentration > 0,
+        100 * chronic_concentration / total_concentration,
+        NA_real_
+      )
+  ) %>%
+  arrange(chemical, distance_ft)
+
+# Save
+write.csv(
+  source_contributions,
+  "~/CO_CRA/CO_CRA_aggregate/output/acute/sepmain_2021-04-26_source_concentrations.csv",
+  row.names = FALSE
+)
+
+source_contributions
+```
 
 
 

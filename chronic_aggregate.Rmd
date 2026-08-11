@@ -16,6 +16,7 @@ library("tidyverse")
 library("lubridate")
 library("viridis")
 library("openxlsx")
+library("sf")
 detach(package:Rmisc)
 detach(package:plyr)
 ```
@@ -740,6 +741,107 @@ for (i in seq_along(plots)) {
   )
 }
 ```
+
+
+
+### getting range of HIs per endpoint at 2,000 ft ###
+
+
+#filter for only grids that overlap with the 2,000 ft setback distance 
+```{r}
+# target radius
+radius <- 610
+
+# grid resolution
+grid_res <- 50
+half_res <- grid_res / 2
+
+# make grid-cell polygons from grid-center coordinates
+grid_cells <- data.frame(
+  cell_id = seq_along(as.vector(x)),
+  x = as.vector(x),
+  y = as.vector(y)
+) %>%
+  rowwise() %>%
+  mutate(
+    geometry = list(
+      st_polygon(list(matrix(
+        c(
+          x - half_res, y - half_res,
+          x + half_res, y - half_res,
+          x + half_res, y + half_res,
+          x - half_res, y + half_res,
+          x - half_res, y - half_res
+        ),
+        ncol = 2,
+        byrow = TRUE
+      )))
+    )
+  ) %>%
+  ungroup() %>%
+  st_as_sf(crs = NA)
+
+# make wellpad points
+wellpad_sf <- st_as_sf(
+  wellpad_cords,
+  coords = c("X", "Y"),
+  crs = NA
+)
+
+# create 610 m circle boundaries only, not filled buffers
+circle_lines <- wellpad_sf %>%
+  st_buffer(dist = radius) %>%
+  st_boundary()
+
+# identify grid cells that intersect any 610 m circle line
+intersects_610m <- st_intersects(grid_cells, circle_lines)
+
+grid_cells$at_610m <- lengths(intersects_610m) > 0
+
+# check number of selected cells
+sum(grid_cells$at_610m)
+```
+
+
+#get the range of HIs for each endpoint in these grids for reporting
+```{r}
+calc_HI_at_610m <- function(mat, ep) {
+
+  vals <- as.vector(mat)
+
+  vals_610m <- vals[grid_cells$at_610m]
+
+  vals_610m <- vals_610m[!is.na(vals_610m)]
+
+  data.frame(
+    endpoint = ep,
+    n_grids = length(vals_610m),
+    min_HI = min(vals_610m),
+    median_HI = median(vals_610m),
+    mean_HI = mean(vals_610m),
+    max_HI = max(vals_610m)
+  )
+}
+
+HI_610m_summary <- do.call(
+  rbind,
+  lapply(names(HI_list), function(ep) {
+    calc_HI_at_610m(HI_list[[ep]], ep)
+  })
+)
+
+rownames(HI_610m_summary) <- NULL
+
+HI_610m_summary
+
+write.csv(
+  HI_610m_summary,
+  "~/CO_CRA/CO_CRA_aggregate/output/chronic/HI_summary_at_2000ft.csv",
+  row.names = FALSE
+)
+```
+
+
 
 
 
