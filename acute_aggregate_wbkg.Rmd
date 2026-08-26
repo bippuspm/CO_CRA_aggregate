@@ -897,20 +897,17 @@ plots_by_endpoint <- lapply(endpoint_names, function(ep) {
           )
         ) +
 
-        labs(
-          # Add A, B, C, etc. directly to each operation plot
-          tag = LETTERS[op_index],
+labs(
+  # Keep A, B, C, etc.
+  tag = LETTERS[op_index],
 
-          # Wrap long operation titles onto multiple lines
-          title = stringr::str_wrap(
-            op,
-            width = 28
-          ),
+  # Remove operation title
+  title = NULL,
 
-          # Shared axis titles are added to the full figure
-          x = NULL,
-          y = NULL
-        ) +
+  # Shared axis titles are added to the full figure
+  x = NULL,
+  y = NULL
+) +
 
         guides(
           fill = guide_legend(
@@ -943,7 +940,7 @@ plots_by_endpoint <- lapply(endpoint_names, function(ep) {
           ),
 
           plot.tag.position = c(
-            0,
+            -0.06,
             1
           ),
 
@@ -1030,36 +1027,18 @@ plots_by_endpoint <- lapply(endpoint_names, function(ep) {
   # Assemble two-column graph section
   # -----------------------------
 
-  graph_section <- patchwork::wrap_plots(
-    plotlist = plot_list_with_legend,
-    ncol = 2,
-    guides = "collect",
-    heights = row_heights
-  ) +
+graph_section <- patchwork::wrap_plots(
+  plotlist = plot_list_with_legend,
+  ncol = 2,
+  guides = "collect",
+  heights = row_heights
+) &
 
-    patchwork::plot_annotation(
-      title = paste(
-        "Stacked HQ Contributions by Distance -",
-        ep
-      ),
-
-      theme = theme(
-        plot.title = element_text(
-          hjust = 0.5,
-          face = "bold",
-          size = 15,
-          margin = margin(
-            b = 8
-          )
-        )
-      )
-    ) &
-
-    theme(
-      legend.position = "right",
-      legend.justification = "center",
-      legend.box = "vertical"
-    )
+  theme(
+    legend.position = "right",
+    legend.justification = "center",
+    legend.box = "vertical"
+  )
 
 
   # -----------------------------
@@ -1068,7 +1047,7 @@ plots_by_endpoint <- lapply(endpoint_names, function(ep) {
 
   shared_x_axis_title <- patchwork::wrap_elements(
     full = grid::textGrob(
-      label = "Distance from Wellpad (ft)",
+      label = "Distance from Well Pad (ft)",
       x = 0.5,
       y = 0.65,
       just = "center",
@@ -2283,17 +2262,7 @@ make_operation_hi_plots <- function(
 
 labs(
   tag = LETTERS[op_index],
-
-  title = paste0(
-    stringr::str_wrap(
-      op,
-      width = 28
-    ),
-    "\n(n = ",
-    op_n,
-    ")"
-  ),
-
+  title = NULL,
   x = NULL,
   y = NULL
 ) +
@@ -2343,10 +2312,10 @@ labs(
             vjust = 1
           ),
 
-          plot.tag.position = c(
-            0,
-            1
-          ),
+plot.tag.position = c(
+  0,
+  1.06
+),
 
           # Retain x-axis labels and ticks on every panel
           axis.text.x = element_text(
@@ -2411,12 +2380,12 @@ labs(
           panel.grid.minor = element_blank(),
 
           # Slightly more space for panel tag
-          plot.margin = margin(
-            t = 8,
-            r = 5,
-            b = 5,
-            l = 8
-          )
+plot.margin = margin(
+  t = 14,
+  r = 5,
+  b = 5,
+  l = 8
+)
         )
 
 
@@ -2687,7 +2656,7 @@ labs(
 
   shared_x_axis_title <- patchwork::wrap_elements(
     full = grid::textGrob(
-      label = "Distance from Wellpad (ft)",
+      label = "Distance from Well Pad (ft)",
       x = 0.5,
       y = 0.65,
       just = "center",
@@ -3156,7 +3125,7 @@ hi_distance_ex <- ggplot(
   ) +
 
   labs(
-    x = "Distance from Wellpad (ft)",
+    x = "Distance from Well Pad (ft)",
     y = "Hazard Index (HI) - p95 Ozone",
     color = "Endpoint",
     shape = "Endpoint",
@@ -3335,14 +3304,12 @@ hq_event_df <- hq_all %>%
   filter(
     `Start Date Time` == event_time
   ) %>%
-
   group_by(
     Operation,
     Endpoint,
     distance_ft,
     chemical
   ) %>%
-
   summarise(
     HQ_mean = mean(
       HQ,
@@ -3350,9 +3317,8 @@ hq_event_df <- hq_all %>%
     ),
     .groups = "drop"
   ) %>%
-
   filter(
-    Endpoint %in% endpoints_exceeding
+    Endpoint %in% endpoint_levels_plot
   )
 
 
@@ -3414,7 +3380,7 @@ endpoint_names <- hq_event_df %>%
   mutate(
     Endpoint_order = match(
       Endpoint,
-      endpoints_exceeding
+      endpoint_levels_plot
     )
   ) %>%
   arrange(
@@ -3609,7 +3575,7 @@ endpoint_plots <- lapply(
 
       labs(
         tag = LETTERS[endpoint_index],
-        title = endpoint_title,
+        title = NULL,
         x = NULL,
         y = NULL
       ) +
@@ -3634,17 +3600,17 @@ endpoint_plots <- lapply(
           margin = margin(b = 6)
         ),
 
-        plot.tag = element_text(
-          face = "bold",
-          size = 11,
-          hjust = 0,
-          vjust = 1
-        ),
+plot.tag = element_text(
+  face = "bold",
+  size = 11,
+  hjust = 0,
+  vjust = 0
+),
 
-        plot.tag.position = c(
-          0,
-          1
-        ),
+plot.tag.position = c(
+  -0.06,
+  1.00
+),
 
         axis.text.x = element_text(
           angle = 45,
@@ -3906,7 +3872,7 @@ graph_with_y_title <- (
 
 shared_x_axis_title <- patchwork::wrap_elements(
   full = grid::textGrob(
-    label = "Distance from Wellpad (ft)",
+    label = "Distance from Well Pad (ft)",
     x = 0.5,
     y = 0.65,
     just = "center",

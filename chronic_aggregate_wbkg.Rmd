@@ -2197,40 +2197,128 @@ ggsave(
 
 #panel together total cancer and background cancer graphs
 ```{r}
-library(patchwork)
+# -----------------------------
+# Scientific notation labels for cancer risk legend
+# -----------------------------
+
+risk_legend_labels <- c(
+  expression(1.5 %*% 10^{-4}),
+  expression(2.5 %*% 10^{-4}),
+  expression(3.5 %*% 10^{-4}),
+  expression(4.5 %*% 10^{-4}),
+  expression(5.5 %*% 10^{-4})
+)
+
+
+# -----------------------------
+# A. Total cancer risk panel
+# -----------------------------
 
 plot_cancer_tot_panel <- plot_cancer_tot +
-  labs(title = NULL) +
+
+  labs(
+    title = NULL
+  ) +
+
+  # Add commas to X-axis coordinates
+  scale_x_continuous(
+    labels = scales::label_comma()
+  ) +
+
+  # Add commas to Y-axis coordinates
+  scale_y_continuous(
+    labels = scales::label_comma()
+  ) +
+
+  # Re-define fill scale so legend uses:
+  # 1.5 × 10^-4 rather than 1.5e-04
+  scale_fill_viridis_c(
+    name = "Cancer Risk",
+    trans = "log10",
+    limits = c(risk_min, risk_max),
+    breaks = risk_breaks,
+    labels = risk_legend_labels,
+    oob = scales::squish
+  ) +
+
   theme(
     legend.position = "right",
     plot.margin = margin(2, 2, 2, 2)
   )
 
+
+# -----------------------------
+# B. Background cancer risk panel
+# -----------------------------
+
 plot_cancer_background_panel <- plot_cancer_background +
-  labs(title = NULL) +
+
+  labs(
+    title = NULL
+  ) +
+
+  # Add commas to X-axis coordinates
+  scale_x_continuous(
+    labels = scales::label_comma()
+  ) +
+
+  # Add commas to Y-axis coordinates
+  scale_y_continuous(
+    labels = scales::label_comma()
+  ) +
+
+  # Re-define fill scale so legend uses:
+  # 1.5 × 10^-4 rather than 1.5e-04
+  scale_fill_viridis_c(
+    name = "Cancer Risk",
+    trans = "log10",
+    limits = c(risk_min, risk_max),
+    breaks = risk_breaks,
+    labels = risk_legend_labels,
+    oob = scales::squish
+  ) +
+
   theme(
     legend.position = "right",
     plot.margin = margin(2, 2, 2, 2)
   )
+
+
+# -----------------------------
+# Combine panels
+# -----------------------------
 
 combined_cancer_panel <- plot_cancer_tot_panel /
   plot_cancer_background_panel +
+
   plot_layout(
     ncol = 1,
     guides = "collect"
   ) +
+
   plot_annotation(
     tag_levels = "A"
   ) &
+
   theme(
     legend.position = "right",
     legend.direction = "vertical",
     legend.title = element_text(size = 10),
     legend.text = element_text(size = 9),
-    plot.tag = element_text(size = 14, face = "bold")
+    plot.tag = element_text(
+      size = 14,
+      face = "bold"
+    )
   )
 
+
+# View
 combined_cancer_panel
+
+
+# -----------------------------
+# Save
+# -----------------------------
 
 ggsave(
   filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_total_background_panel.png",
@@ -2379,7 +2467,10 @@ write.csv(
 
 #figure of average individual chemical contributes to cancer risks at 2000 ft, with the x axis being the different scenarios: 1) without background, 2) background only, 3) total
 ```{r}
-# chemical labels and colors
+# -----------------------------
+# Chemical labels and colors
+# -----------------------------
+
 chem_labels <- c(
   "benzene" = "Benzene",
   "ethylbenzene" = "Ethylbenzene",
@@ -2394,6 +2485,7 @@ chem_colors <- c(
   "TCE"          = "#225EA8"
 )
 
+
 # -----------------------------
 # 1. Prepare no-background and with-background data
 # -----------------------------
@@ -2402,18 +2494,30 @@ risk_610m_plot_df <- cancer_610m_summary %>%
   filter(chemical != "Total cancer risk") %>%
   filter(scenario %in% c("Without background", "With background")) %>%
   mutate(
-    chemical = recode(chemical, !!!chem_labels),
-scenario = factor(
-  scenario,
-  levels = c("Without background", "Background only", "With background"),
-  labels = c("UOG Only", "Background Only", "Total")
-)
+    chemical = recode(
+      chemical,
+      !!!chem_labels
+    ),
+    scenario = factor(
+      scenario,
+      levels = c(
+        "Without background",
+        "Background only",
+        "With background"
+      ),
+      labels = c(
+        "UOG Only",
+        "Background Only",
+        "Total"
+      )
+    )
   ) %>%
   select(
     scenario,
     chemical,
     mean_risk
   )
+
 
 # -----------------------------
 # 2. Prepare background-only data
@@ -2422,7 +2526,10 @@ scenario = factor(
 background_plot_df <- cancer_summary_background_ind %>%
   mutate(
     scenario = "Background only",
-    chemical = recode(chemical, !!!chem_labels),
+    chemical = recode(
+      chemical,
+      !!!chem_labels
+    ),
     mean_risk = mean
   ) %>%
   select(
@@ -2431,12 +2538,21 @@ background_plot_df <- cancer_summary_background_ind %>%
     mean_risk
   ) %>%
   mutate(
-scenario = factor(
-  scenario,
-  levels = c("Without background", "Background only", "With background"),
-  labels = c("UOG Only", "Background Only", "Total")
-)
+    scenario = factor(
+      scenario,
+      levels = c(
+        "Without background",
+        "Background only",
+        "With background"
+      ),
+      labels = c(
+        "UOG Only",
+        "Background Only",
+        "Total"
+      )
+    )
   )
+
 
 # -----------------------------
 # 3. Combine
@@ -2446,16 +2562,25 @@ risk_stacked_plot_df <- bind_rows(
   risk_610m_plot_df,
   background_plot_df
 ) %>%
-  filter(chemical %in% names(chem_colors)) %>%
+  filter(
+    chemical %in% names(chem_colors)
+  ) %>%
   mutate(
     chemical = factor(
       chemical,
-      levels = c("Benzene", "Ethylbenzene", "PCE", "TCE")
+      levels = c(
+        "Benzene",
+        "Ethylbenzene",
+        "PCE",
+        "TCE"
+      )
     )
   )
 
-# check values
+
+# Check values
 risk_stacked_plot_df
+
 
 # -----------------------------
 # 4. Plot
@@ -2463,10 +2588,20 @@ risk_stacked_plot_df
 
 cancer_risk_stacked_bar <- ggplot(
   risk_stacked_plot_df,
-  aes(x = scenario, y = mean_risk, fill = chemical)
+  aes(
+    x = scenario,
+    y = mean_risk,
+    fill = chemical
+  )
 ) +
-  geom_col(width = 0.7, color = "black", linewidth = 0.2) +
 
+  geom_col(
+    width = 0.7,
+    color = "black",
+    linewidth = 0.2
+  ) +
+
+  # Cancer risk reference lines
   geom_hline(
     yintercept = c(1e-6, 1e-4),
     linetype = "dashed",
@@ -2474,40 +2609,65 @@ cancer_risk_stacked_bar <- ggplot(
     linewidth = 0.8
   ) +
 
-scale_fill_manual(
-  name = "Chemical",
-  values = chem_colors,
-  labels = c(
-    "Benzene" = "Benzene (B)",
-    "Ethylbenzene" = "Ethylbenzene (E)",
-    "PCE" = "PCE (P)",
-    "TCE" = "TCE (T)"
-  )
-) +
+  # Chemical colors and legend labels
+  scale_fill_manual(
+    name = "Chemical",
+    values = chem_colors,
+    labels = c(
+      "Benzene" = "Benzene (B)",
+      "Ethylbenzene" = "Ethylbenzene (E)",
+      "PCE" = "PCE (P)",
+      "TCE" = "TCE (T)"
+    )
+  ) +
 
+  # Y axis using scientific notation:
+  # e.g., 1 × 10^-6 instead of 1.0e-06
   scale_y_continuous(
     limits = c(0, 2.6e-4),
-    breaks = c(1e-6, 5e-5, 1e-4, 1.5e-4, 2e-4, 2.5e-4),
-    labels = c("1.0e-06", "5.0e-05", "1.0e-04", "1.5e-04", "2.0e-04", "2.5e-04"),
+    breaks = c(
+      1e-6,
+      5e-5,
+      1e-4,
+      1.5e-4,
+      2e-4,
+      2.5e-4
+    ),
+    labels = c(
+      expression(1 %*% 10^{-6}),
+      expression(5 %*% 10^{-5}),
+      expression(1 %*% 10^{-4}),
+      expression(1.5 %*% 10^{-4}),
+      expression(2 %*% 10^{-4}),
+      expression(2.5 %*% 10^{-4})
+    ),
     expand = c(0, 0)
   ) +
 
   labs(
     x = NULL,
-    y = "Average Cancer Risk at 2,000 ft (n = 553 grids)"
+    y = "Average Cancer Risk at 2000 ft (n = 553 grids)"
   ) +
 
   theme_minimal() +
-theme(
-  legend.position = "right",
-  axis.text.x = element_text(
-    angle = 0,
-    hjust = 0.5,
-    size = 11
-  )
-)
 
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(
+      angle = 0,
+      hjust = 0.5,
+      size = 11
+    )
+  )
+
+
+# Display plot
 cancer_risk_stacked_bar
+
+
+# -----------------------------
+# 5. Save plot
+# -----------------------------
 
 ggsave(
   filename = "~/CO_CRA/CO_CRA_aggregate/output/chronic/cancer_mean_risk_stacked_bar.png",
