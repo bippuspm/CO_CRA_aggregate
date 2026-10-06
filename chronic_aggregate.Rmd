@@ -1,5 +1,5 @@
 ---
-title: "chronic_aggregate"
+title: "chronic aggregate analysis without background"
 output: html_document
 date: "2026-03-10"
 ---
@@ -25,7 +25,7 @@ detach(package:plyr)
 #load data
 ```{r}
 rfcs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/RfCs_5-2026.csv")
-iurs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/IURs.csv")
+iurs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/IURs_Oct2026.csv")
 dist_source = read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/distance_to_nearest_source.csv")
 
 #ozone

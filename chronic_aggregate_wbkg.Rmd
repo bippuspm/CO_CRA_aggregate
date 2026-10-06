@@ -27,7 +27,7 @@ detach(package:plyr)
 #load data
 ```{r}
 rfcs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/RfCs_5-2026.csv")
-iurs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/IURs.csv")
+iurs = read.csv("~/CO_CRA/CO_CRA_aggregate/data/IURs_Oct2026.csv")
 dist_source = read.csv("~/CO_CRA/CO_CRA_aggregate/data/broomfield/distance_to_nearest_source.csv")
 
 #ozone
@@ -1893,13 +1893,19 @@ setback_boundary_df <- setback_boundary %>%
   st_coordinates() %>%
   as.data.frame()
 
-# fixed/define legend
-risk_min <- 1.5e-4
-risk_max <- 5.5e-4
+# fixed/defined legend
+risk_min <- 1.5e-6
+risk_max <- 5.5e-6
 
-risk_breaks <- c(1.5e-4, 2.5e-4, 3.5e-4, 4.5e-4, 5.5e-4)
+risk_breaks <- c(
+  1.5e-6,
+  2.5e-6,
+  3.5e-6,
+  4.5e-6,
+  5.5e-6
+)
 
-contour_levels <- c(1e-6, 1e-4)
+contour_levels <- c(1e-6)
 
 # make data
 df <- make_df(CancerRisk_total, x, y)
@@ -2122,14 +2128,19 @@ setback_boundary_df <- setback_boundary %>%
   st_coordinates() %>%
   as.data.frame()
 
-# fixed legend
-risk_min <- 1.5e-4
-risk_max <- 5.5e-4
+# fixed/defined legend
+risk_min <- 1.5e-6
+risk_max <- 5.5e-6
 
-risk_breaks <- c(1.5e-4, 2.5e-4, 3.5e-4, 4.5e-4, 5.5e-4)
+risk_breaks <- c(
+  1.5e-6,
+  2.5e-6,
+  3.5e-6,
+  4.5e-6,
+  5.5e-6
+)
 
-# regulatory contour limits
-contour_levels <- c(1e-6, 1e-4)
+contour_levels <- c(1e-6)
 
 # create dataframe from BACKGROUND risk
 df <- make_df(CancerRisk_background, x, y)
@@ -2202,11 +2213,11 @@ ggsave(
 # -----------------------------
 
 risk_legend_labels <- c(
-  expression(1.5 %*% 10^{-4}),
-  expression(2.5 %*% 10^{-4}),
-  expression(3.5 %*% 10^{-4}),
-  expression(4.5 %*% 10^{-4}),
-  expression(5.5 %*% 10^{-4})
+  expression(1.5 %*% 10^{-6}),
+  expression(2.5 %*% 10^{-6}),
+  expression(3.5 %*% 10^{-6}),
+  expression(4.5 %*% 10^{-6}),
+  expression(5.5 %*% 10^{-6})
 )
 
 
@@ -2231,7 +2242,7 @@ plot_cancer_tot_panel <- plot_cancer_tot +
   ) +
 
   # Re-define fill scale so legend uses:
-  # 1.5 × 10^-4 rather than 1.5e-04
+  # 1.5 × 10^-6 rather than 1.5e-06
   scale_fill_viridis_c(
     name = "Cancer Risk",
     trans = "log10",
@@ -2268,7 +2279,7 @@ plot_cancer_background_panel <- plot_cancer_background +
   ) +
 
   # Re-define fill scale so legend uses:
-  # 1.5 × 10^-4 rather than 1.5e-04
+  # 1.5 × 10^-6 rather than 1.5e-06
   scale_fill_viridis_c(
     name = "Cancer Risk",
     trans = "log10",
@@ -2623,26 +2634,28 @@ cancer_risk_stacked_bar <- ggplot(
 
   # Y axis using scientific notation:
   # e.g., 1 × 10^-6 instead of 1.0e-06
-  scale_y_continuous(
-    limits = c(0, 2.6e-4),
-    breaks = c(
-      1e-6,
-      5e-5,
-      1e-4,
-      1.5e-4,
-      2e-4,
-      2.5e-4
-    ),
-    labels = c(
-      expression(1 %*% 10^{-6}),
-      expression(5 %*% 10^{-5}),
-      expression(1 %*% 10^{-4}),
-      expression(1.5 %*% 10^{-4}),
-      expression(2 %*% 10^{-4}),
-      expression(2.5 %*% 10^{-4})
-    ),
-    expand = c(0, 0)
-  ) +
+scale_y_continuous(
+  limits = c(0, 3e-6),
+  breaks = c(
+    0,
+    0.5e-6,
+    1e-6,
+    1.5e-6,
+    2e-6,
+    2.5e-6,
+    3e-6
+  ),
+  labels = c(
+    "0",
+    expression(0.5 %*% 10^{-6}),
+    expression(1 %*% 10^{-6}),
+    expression(1.5 %*% 10^{-6}),
+    expression(2 %*% 10^{-6}),
+    expression(2.5 %*% 10^{-6}),
+    expression(3 %*% 10^{-6})
+  ),
+  expand = c(0, 0)
+) +
 
   labs(
     x = NULL,
@@ -3493,19 +3506,6 @@ writeData(
 )
 
 
-# Background-only minimum-value check
-addWorksheet(
-  cancer_distance_wb,
-  "Background value check"
-)
-
-writeData(
-  cancer_distance_wb,
-  sheet = "Background value check",
-  x = background_min_by_chemical
-)
-
-
 # ------------------------------------------------------------
 # 25. Format Excel workbook
 # ------------------------------------------------------------
@@ -3528,12 +3528,6 @@ freezePane(
   firstRow = TRUE
 )
 
-freezePane(
-  cancer_distance_wb,
-  sheet = "Background value check",
-  firstRow = TRUE
-)
-
 setColWidths(
   cancer_distance_wb,
   sheet = "Long summary",
@@ -3552,13 +3546,6 @@ setColWidths(
   cancer_distance_wb,
   sheet = "Distance grid counts",
   cols = 1:ncol(distance_grid_counts),
-  widths = "auto"
-)
-
-setColWidths(
-  cancer_distance_wb,
-  sheet = "Background value check",
-  cols = 1:ncol(background_min_by_chemical),
   widths = "auto"
 )
 
